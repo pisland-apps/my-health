@@ -21,7 +21,7 @@
 // ever shows a version that doesn't match what you expect after deploying,
 // that's the signal to hard-refresh (Ctrl/Cmd+Shift+R) or clear the site's
 // Service Worker/cache in devtools - not a sign the deploy failed.
-const CACHE_VERSION = 'v59';
+const CACHE_VERSION = 'v60';
 const CACHE_NAME = `my-health-${CACHE_VERSION}`;
 
 const APP_SHELL = [
