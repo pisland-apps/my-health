@@ -517,13 +517,6 @@
 .reminder-item { align-items:flex-start; }
 .reminder-item > .tag { flex-shrink:0; margin-top:2px; }
 
-.report-wrap { container-type:inline-size; }
-.report-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
-.report-grid > .report-card:last-child:nth-child(odd) { grid-column:span 2; }
-@container (max-width: 420px) { .report-grid { grid-template-columns:repeat(2, 1fr); } }
-.report-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:14px 8px; background:var(--bg); border:1px solid var(--border); border-radius:12px; cursor:pointer; color:var(--text); font-size:13px; font-weight:500; transition:transform .15s, box-shadow .15s, border-color .15s; }
-.report-card:hover { transform:translateY(-2px); border-color:var(--primary); box-shadow:0 4px 12px rgba(13,148,136,.12); }
-.report-card:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .report-ico { font-size:22px; line-height:1; }
 
 /* ---- Header icon buttons, Setting, lock-screen reset (v57) ---- */
@@ -567,3 +560,18 @@
 .rec-act-ok:hover { background:var(--success-light); color:#047857; }
 .link-btn { margin-top:10px; padding:4px 0; border:none; background:none; color:var(--text-secondary); font-size:12px; text-decoration:underline; cursor:pointer; }
 .link-btn:hover { color:var(--text); }
+
+/* ---- Sidebar Reports (v61): moved from the overview page ---- */
+.sidebar-reports { padding:8px 12px 12px; border-top:1px solid var(--border); }
+.sidebar-reports:empty { display:none; }
+.sidebar-reports-title { font-size:12px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; color:var(--text-secondary); padding:8px 12px 6px; }
+.sidebar-report { display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px; border:none; border-radius:10px; background:transparent; color:var(--text); font-size:14px; font-weight:500; cursor:pointer; text-align:left; }
+.sidebar-report:hover { background:var(--bg); }
+.sidebar-report:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.sidebar-report .report-ico { font-size:18px; width:22px; text-align:center; }
+@media (min-width: 769px) and (hover: none) and (pointer: coarse) {
+  .sidebar:not(.open) .sidebar-reports { padding:8px 6px; }
+  .sidebar:not(.open) .sidebar-reports-title,
+  .sidebar:not(.open) .sidebar-report-label { display:none; }
+  .sidebar:not(.open) .sidebar-report { justify-content:center; padding:10px 4px; }
+}

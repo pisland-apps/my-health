@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v60';
+    const APP_VERSION = 'v61';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1767,8 +1767,34 @@
       return zh[idx];
     }
 
+    // ========== SIDEBAR REPORTS ==========
+    // Report shortcuts live in the sidebar (between the member list and
+    // Setting) and act on the currently selected member. Clicks are handled
+    // by the delegated [data-report-type] listener at the bottom of this file.
+    const SIDEBAR_REPORTS = [
+      ['summary',    '📋', 'Health Summary'],
+      ['vaccine',    '💉', 'Vaccine Record'],
+      ['medication', '💊', 'Medication List'],
+      ['lab',        '🔬', 'Lab Results'],
+      ['bp',         '🩺', 'BP Log'],
+      ['growth',     '📏', 'Growth Chart'],
+      ['annual',     '📅', 'Annual Report']
+    ];
+    function renderSidebarReports() {
+      const box = document.getElementById('sidebarReports');
+      if (!box) return;
+      const m = currentMemberId ? live(members).find(x => x.id === currentMemberId) : null;
+      if (!m) { box.innerHTML = ''; return; }
+      box.innerHTML = `
+        <div class="sidebar-reports-title">📄 Reports</div>
+        ${SIDEBAR_REPORTS.map(([key, ico, name]) => `
+          <button type="button" class="sidebar-report" title="${name}" data-report-type="${key}" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">${ico}</span><span class="sidebar-report-label">${name}</span></button>`).join('')}
+      `;
+    }
+
     // ========== MEMBER LIST ==========
     function renderMemberList() {
+      renderSidebarReports();
       updateStorageMeter();
       const list = document.getElementById('memberList');
       const liveMembers = live(members);
@@ -2026,19 +2052,6 @@
               </div>
             `).join('') || '<p class="s-9155c939">No reminders</p>'}
           </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">📄 Reports</div>
-          <div class="report-wrap"><div class="report-grid">
-            <button class="report-card" data-report-type="summary" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📋</span><span class="report-name">Health Summary</span></button>
-            <button class="report-card" data-report-type="vaccine" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💉</span><span class="report-name">Vaccine Record</span></button>
-            <button class="report-card" data-report-type="medication" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💊</span><span class="report-name">Medication List</span></button>
-            <button class="report-card" data-report-type="lab" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">🔬</span><span class="report-name">Lab Results</span></button>
-            <button class="report-card" data-report-type="bp" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">🩺</span><span class="report-name">BP Log</span></button>
-            <button class="report-card" data-report-type="growth" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📏</span><span class="report-name">Growth Chart</span></button>
-            <button class="report-card" data-report-type="annual" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📅</span><span class="report-name">Annual Report</span></button>
-          </div></div>
         </div>
       `;
     }
@@ -4766,6 +4779,7 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     document.addEventListener('click', function(e) {
       const reportBtn = e.target.closest('[data-report-type]');
       if (reportBtn) {
+        if (reportBtn.closest('#sidebarPanel')) closeSidebarOnMobile();
         openReportPreview(reportBtn.dataset.reportType, reportBtn.dataset.reportMember);
         return;
       }
