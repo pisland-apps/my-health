@@ -483,14 +483,19 @@
   <!-- Security / Encryption Modal -->
   <div class="modal-overlay" id="securityModal">
     <div class="modal">
-      <div class="modal-header">🔒 Attachment Encryption</div>
+      <div class="modal-header">🔒 Passcode &amp; Encryption</div>
       <div id="securitySetupSection">
+        <p class="s-20172216 s-hidden" id="secFirstRunIntro">
+          <strong>Welcome!</strong> Set a passcode now to protect your health records on this device.
+          Do this <em>before</em> importing a backup, so everything you import is stored encrypted.
+        </p>
         <p class="s-20172216">
-          Protect your stored photos/PDFs (health record documents) with a passcode.
-          Files are encrypted on this device using AES-256-GCM (via PBKDF2 key derivation) before being saved.
+          Protect your health records and stored photos/PDFs with a passcode. Everything is encrypted on this
+          device using AES-256-GCM (via PBKDF2 key derivation), and the app asks for the passcode each time it opens.
         </p>
         <p class="s-52b1c46e">
-          ⚠️ There is no password recovery. If you forget this passcode, encrypted attachments cannot be recovered — ever.
+          ⚠️ There is no password recovery. If you forget this passcode, your encrypted data and attachments
+          cannot be recovered from this device — ever. Keep an exported backup somewhere safe.
         </p>
         <div class="form-group">
           <label class="form-label">Create Passcode</label>

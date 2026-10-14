@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v53';
+    const APP_VERSION = 'v54';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1337,7 +1337,9 @@
         );
         initAppData();
       } else {
-        initAppData();
+        // Plain start (encryption never set up / never deliberately turned
+        // off on this device): once the app has loaded, offer passcode setup.
+        initAppData().then(maybeShowFirstRunSetup);
       }
     }
 
@@ -4309,10 +4311,50 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     // ========== START ==========
     window.addEventListener('DOMContentLoaded', init);
 
+    // ===== First-run passcode setup =====
+    // On the first launch of a fresh install (no encryption config, no earlier
+    // deliberate enable/disable choice, and the prompt not already skipped) the
+    // Security modal opens by itself in "first run" mode: a welcome line is
+    // shown and Close reads "Skip for now". Skipping - by any route (button,
+    // the [X], Escape, the phone's Back gesture) - is remembered with
+    // SETUP_PROMPT_KEY so the prompt does not come back on every launch; it
+    // stays available under Security in the header. Closing the tab without
+    // choosing is NOT a skip, so the prompt returns on the next launch.
+    const SETUP_PROMPT_KEY = 'family_health_tracker_setup_prompted';
+    let firstRunSetupMode = false;
+
+    function shouldPromptFirstRunSetup() {
+      if (isEncryptionEnabled()) return false;
+      const intent = getCryptoIntent();
+      if (intent === 'enabled' || intent === 'disabled') return false;
+      try { return !localStorage.getItem(SETUP_PROMPT_KEY); } catch { return false; }
+    }
+
+    async function maybeShowFirstRunSetup() {
+      if (!shouldPromptFirstRunSetup()) return;
+      firstRunSetupMode = true;
+      await renderSecurityModalState();
+      document.getElementById('securityModal').classList.add('active');
+      setTimeout(() => document.getElementById('secPasscode1').focus(), 50);
+    }
+
+    // One observer for every way the modal can be closed (see comment above).
+    new MutationObserver(() => {
+      if (!firstRunSetupMode) return;
+      if (document.getElementById('securityModal').classList.contains('active')) return;
+      firstRunSetupMode = false;
+      if (!isEncryptionEnabled()) {
+        try { localStorage.setItem(SETUP_PROMPT_KEY, new Date().toISOString()); } catch {}
+      }
+    }).observe(document.getElementById('securityModal'), { attributes: true, attributeFilter: ['class'] });
+
     // ===== Security modal (setup / manage encryption) =====
     async function renderSecurityModalState() {
       const cfg = getCryptoConfig();
       const enabled = !!(cfg && cfg.enabled);
+      const firstRun = firstRunSetupMode && !enabled;
+      document.getElementById('secFirstRunIntro').style.display = firstRun ? 'block' : 'none';
+      document.getElementById('btnCloseSecurity').textContent = firstRun ? 'Skip for now' : 'Close';
       document.getElementById('securitySetupSection').style.display = enabled ? 'none' : 'block';
       document.getElementById('securityManageSection').style.display = enabled ? 'block' : 'none';
       if (enabled) {
@@ -4334,6 +4376,7 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     }
     document.getElementById('btnSecurity').addEventListener('click', async () => {
       if (isEncryptionEnabled() && !(await ensureUnlocked())) return;
+      firstRunSetupMode = false; // opened by hand from the header, not the first-run prompt
       await renderSecurityModalState();
       document.getElementById('securityModal').classList.add('active');
     });
