@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+
+  <!-- ============================================================
+       Content-Security-Policy —— 设计说明 / 风险评估（供以后审计或收紧策略时查阅）
+       更新日期：2026-08-09
+
+       目标：降低 XSS 的“利用后果”，而不是依赖它防住已知的输入转义问题
+       （转义问题另见 escapeHtml() 的使用审计，已逐一走查全部 innerHTML /
+       document.write 渲染路径，未发现未转义的用户输入）。
+
+       1. script-src 用 'self'（外部 app.js 文件），而不是哈希白名单：
+          - 本应用是纯静态单文件托管（无后端渲染），无法用随机 nonce（nonce 必须
+            每次请求由服务端重新生成且不可预测；写死在静态 HTML 里的 nonce
+            对攻击者同样可见，起不到防护作用）。
+          - 曾经试过对内联 <script> 整块内容做 SHA-256 哈希白名单，但这个方案
+            太脆弱：哈希必须和脚本字节内容精确匹配，本地算好之后 push 到
+            GitHub Pages，字节发生了变化（具体原因未完全查清，可能是 git 在
+            commit 时做了换行符/编码规整），导致部署后的哈希对不上，整个内联
+            脚本被 CSP 拦截，App 白屏——本地测试完全正常，只有部署后才会炸，
+            很难排查。
+          - 现在把这段脚本整体挪到独立的 app.js 文件，用
+            <script src="app.js"></script> 引入。外部脚本文件天然被
+            script-src 'self' 覆盖，不需要哈希，也就没有这个脆弱性——同时防护
+            效果不变：任何 XSS 注入的内联 <script> 或 onclick= 依然会被 CSP
+            拦截，因为它们不是来自 app.js。
+          - `scripts/update_csp_hash.py` 和 `.githooks/pre-commit` 是旧哈希方案
+            用的维护脚本，现在已经不需要了，保留只是历史记录（可以删除）。
+
+       2. 主文档里原来的 8 处 onclick="..." 已重构成 data-* 属性 + 一个
+          document 级别的委托 click 监听器（见文末“Delegated click handler”），
+          所以这 8 处不再需要 'unsafe-inline'。已确认：
+          - 这 8 处内嵌的都是内部生成的 UUID（m.id / memberId），不是用户输入，
+            所以重构前也没有属性逃逸风险，重构主要是为了让 CSP 能去掉
+            'unsafe-inline'。
+          - 早期版本里有 9 个打印/报告弹窗（printEmergency、printBPLog、
+            insOpenPrintWindow 等）各自通过 window.open('','_blank') +
+            document.write(...) 生成独立文档，带自己的一份显式 <meta> CSP
+            （允许 style-src/script-src unsafe-inline，专为报告用的内联
+            <style> 和打印按钮 onclick）。2026-09-20（v41–v44）更新：这套
+            弹窗架构已经**全部退役**——9 个报告现在统一走同一个 #printContainer
+            in-page 打印路径（见文末"In-app print reports"那段设计说明），
+            不再创建任何独立 window/document，因此也就不再有第二份、更宽松
+            的 CSP 需要维护或审计；本 <meta> CSP 是全站唯一一份，报告内容
+            同样受它约束，不允许任何内联脚本或未加白名单哈希的内联样式。
+
+       3. style-src 现在收紧为 'self'（不再保留 'unsafe-inline'）：
+          - 2026-08-10 更新：主文档（index.html + app.js 里渲染主界面的部分）
+            原来的约 285 处内联 style="..." 已经全部改造成预先生成的 CSS class
+            （见 <style> 块末尾"Auto-generated utility classes"那一段，class 名
+            是内容的哈希，机械化生成，保证跟原来的内联值逐字节一致，不是重新
+            设计样式）。app.js 里另外 2 处 .style.cssText = '...' 也改成了对单
+            个 CSSOM 属性逐条赋值（例如 canvas.style.display = 'block'）——这是
+            因为 CSP 的 style-src 限制的是"设置整段内联样式"这个动作（style="..."
+            属性本身、setAttribute('style',...)、.style.cssText 整体赋值），
+            而不是"用 JS 改一个具体的 CSS 属性"，所以 el.style.width = pct + '%'
+            这种逐属性赋值即使没有 unsafe-inline 也一直是允许的，本来就是解决
+            "数值随渲染变化、没法提前生成 class"这类情况的标准写法（用在了存储
+            空间进度条、保单表单的显示/隐藏切换）。
+          - 2026-09-20（v41–v44）更新：上面第 2 点提到的"9 个打印弹窗各自带
+            自己一份更宽松 CSP"这个例外已经不存在了——那套弹窗架构已整体退役，
+            9 个报告现在都在本文档的 style-src 之下渲染，同样只能用下面这份
+            预生成的 CSS class，不存在任何内联样式的例外。
+          - 2026-09-23 更新：style-src 的哈希白名单方案已**整体废弃**，改成了
+            跟上面第 1 点 script-src 完全一样的思路——把 <style> 块整体挪到
+            外部 `styles.css` 文件，用 <link rel="stylesheet" href="styles.css">
+            引入，style-src 直接写 'self'，不再需要任何哈希。原因：这套哈希
+            方案在生产里已经两次把整个界面弄成"裸奔"（没有任何 CSS 生效）——
+            一次是 2026-08-10 刚上线时完全没给 <style> 块留哈希（见下面 ⚠️
+            段落），另一次是 v42（2026-09-20）由注释文字里恰好出现了字面意义
+            上的 `<style>` 导致哈希提取脚本截错位置；v45 之后还发现过第三种
+            变体——注释里出现字面意义上的 `*/` 提前把 CSS 注释截断，导致
+            后面紧跟着的一条规则（当时是版本号角标那条）被浏览器整体丢弃、
+            但哈希本身照样"算得出来"，CSP 也不报错，纯粹靠界面看着不对才发现。
+            三次事故的共同点是：只要 <style> 块里的注释文字凑巧包含几个特定
+            字符组合，就会在"哈希照算不误、CSP 毫无报错"的情况下让部分或全部
+            样式在浏览器里失效，属于结构性问题，不是能靠"写注释时小心点"
+            或"多测试一遍"彻底避免的——因此改用 'self' + 外部文件，跟 script-src
+            的解法保持一致：浏览器校验的是"是不是同源的这个文件"，不再是
+            "内容有没有一字不差"，普通编辑（包括改注释）不再可能触发这类问题。
+            下面这段 ⚠️ 提醒和 `regen-style-hash.py` 脚本本身**只保留作历史
+            记录**，说明当初为什么走了哈希这条路、又是怎么踩坑的——现在的
+            style-src 已经不再依赖任何哈希，改 <style> 块（其实是 `styles.css`
+            了）不需要跑这个脚本，也不需要同步 `_headers`。
+          - 【以下这段是 2026-09-23 之前的旧方案记录，仅供历史参考，当前
+            style-src 已改用 'self' + 外部 styles.css，不再适用】⚠️ 重要维护
+            提醒：下面 style-src 里那个 'sha256-...' 是这个文件里
+            <style> 块（从 <style> 到 </style> 之间，逐字节，含空白/换行）的
+            哈希。这意味着：以后只要动了这个 <style> 块里的任何一条 CSS 规则
+            ——哪怕只加一行——这个哈希就会失效，浏览器会整块拒绝这份样式表，
+            页面会变成完全没有样式的原始 HTML（这正是 2026-08-10 第一次上线
+            时出现过的真实事故：当时把 style-src 直接收紧成 'self' 又没给
+            <style> 块留哈希，导致整个界面直接"裸奔"）。改完 CSS 之后，跑一下
+            仓库里的 `python3 regen-style-hash.py`，把打印出来的新哈希同时
+            贴进这里的 style-src 和 `_headers` 文件里对应的位置——两处必须
+            完全一致，否则浏览器会按两份 CSP 取交集执行，只要有一份哈希不对，
+            页面照样会裸奔。
+
+       4. frame-ancestors 没有写进这个 <meta> 标签：
+          - 这是 CSP 规范的限制，不是遗漏——frame-ancestors / sandbox 等指令
+            通过 <meta http-equiv> 声明时会被浏览器直接忽略，只有通过 HTTP
+            响应头（Content-Security-Policy 头）设置才生效。
+          - 2026-08-10 更新：已解决——项目改为部署到 Cloudflare Pages，
+            通过仓库根目录的 `_headers` 文件下发真正的 HTTP 响应头，
+            其中包含 `frame-ancestors 'none'` 以及 `X-Frame-Options: DENY`
+            作为旧浏览器的兜底。这个 <meta> CSP 和 `_headers` 里的 CSP
+            会被浏览器同时强制执行（取交集，更严格的那个生效），两边内容
+            保持一致即可，不会冲突。如果以后改了任一份 CSP 记得同步改
+            另一份。GitHub Pages 仍可用于快速本地演示/测试，但不再是
+            推荐的生产部署方式，因为它不支持自定义响应头，也就补不上
+            点击劫持防护这一块。
+
+       5. img-src 放开了 data: 和 blob:：
+          - data: 用于内置的 SVG favicon 以及附件缩略图（图片/PDF 都是先转成
+            data URL 存 IndexedDB，渲染时再用）。
+          - blob: 用于附件查看器里 <img> 预览图片、以及下载按钮
+            （a.href = blob URL）。
+          - 这两个 scheme 都只会指向“本机内存里生成的内容”，不会被攻击者
+            远程操控成外部地址，风险可控。
+          - 2026-08-09 更新：PDF 预览已从 <iframe src="blob:..."> 改为用
+            pdf.js 把 PDF 解码后逐页画到 <canvas> 上（做法与
+            tax-tracker 一致），不再需要把 blob URL 交给浏览器自己的 PDF
+            插件渲染，也就不再需要 frame-src 允许 blob:——干脆把
+            frame-src 整条指令删掉，交给 default-src 'none' 兜底，直接禁止
+            本页面被任何来源 <iframe> 嵌入内容，比之前的 'self' blob: 更严格。
+          - worker-src 'self' 用于加载 ./lib/pdfjs-6.4.299/pdf.worker.min.mjs（pdf.js 的
+            后台线程），vendored 在本地，不引入任何第三方源。
+
+       6. connect-src 'self'：应用是离线优先、纯本地存储（IndexedDB），代码里
+          没有 fetch()/XMLHttpRequest 调用，理论上可以设成 'none'，但留 'self'
+          是为了不影响 Service Worker 自身的资源请求，且几乎不增加实际风险。
+     ============================================================ -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self';
+    style-src 'self';
+    img-src 'self' data: blob:;
+    font-src 'self';
+    connect-src 'self';
+    worker-src 'self';
+    manifest-src 'self';
+    object-src 'none';
+    base-uri 'none';
+    form-action 'none';
+  ">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Health</title>
+  <meta name="description" content="Health records tracker with on-device encryption, works offline as an installable app.">
+  <meta name="theme-color" content="#0d9488">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="My Health">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/icon-16.png">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234f7cff'/%3E%3Cstop offset='1' stop-color='%2310b981'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 15c-9-11-24-2-22 10 1.5 9 12 16 22 24 10-8 20.5-15 22-24 2-12-13-21-22-10z' fill='white' opacity='0.95'/%3E%3Crect x='27.5' y='24' width='9' height='22' rx='2' fill='%234f7cff'/%3E%3Crect x='20' y='31.5' width='24' height='9' rx='2' fill='%234f7cff'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
+  <link rel="shortcut icon" href="favicon.ico">
+  <script src="lib/jszip.min.js"></script>
+  <!--
+    pdf.js is loaded from inside app.js via dynamic import(), not from a
+    <script> tag here - see the pdfjsLibPromise comment in app.js for why
+    (pdfjs-dist 4.x+ only ships ES module builds, and a `type="module"`
+    tag here would race against app.js's own (classic, non-deferred) load
+    order). Vendored locally at ./lib/pdfjs-6.4.299/pdf.min.mjs + ./lib/pdfjs-6.4.299/pdf.worker.min.mjs (v50: version-named folder)
+    (pdfjs-dist) rather than a CDN, so script-src can stay 'self' with no
+    CDN origin or SRI hash to keep in sync. Used by the attachment viewer
+    to render PDF pages onto <canvas> instead of handing a blob URL to the
+    browser's own PDF plugin (see openAttachment() in app.js for why).
+  -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="offlineBanner" class="s-99a28ff6">
+    📶 You're offline — the app keeps working; changes are saved on this device.
+  </div>
+  <!-- Version badge: deliberately placed outside/above #appLockScreen's stacking context
+       (z-index 10001 > lock screen's 9999) so it stays visible even before the passcode is
+       entered. Text is filled in by app.js from APP_VERSION/APP_VERSION_DATE — this is a
+       "what code shipped" label only, unrelated to whether data is unlocked. -->
+  <div id="versionBadge" class="s-00642396"></div>
+  <!-- Full-app lock screen, shown before ANY data loads when encryption is enabled -->
+  <div id="appLockScreen" class="s-65a77d96">
+    <div class="s-0e7d5f49">
+      <div class="s-0f5283bc">🔒</div>
+      <h2 class="s-bdfc2dc5">My Health is Locked</h2>
+      <p class="s-02225414">Enter your passcode to unlock your data.</p>
+      <div class="form-group">
+        <input type="text" class="form-input s-passcode-mask" id="appLockPasscodeInput" placeholder="Passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="none">
+      </div>
+      <div class="numpad" id="appLockNumpad">
+        <button type="button" class="numpad-btn" data-numpad-digit="1">1</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="2">2</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="3">3</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="4">4</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="5">5</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="6">6</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="7">7</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="8">8</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="9">9</button>
+        <button type="button" class="numpad-btn numpad-btn-action" id="appLockNumpadToggle" title="Passcode has letters? Switch to keyboard">⌨️</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="0">0</button>
+        <button type="button" class="numpad-btn numpad-btn-action" id="appLockNumpadBackspace" title="Backspace">⌫</button>
+      </div>
+      <div id="appLockError" class="s-0100dc7f"></div>
+      <button class="btn btn-primary s-8588e44d" id="btnAppLockUnlock">Unlock</button>
+      <div id="appLockBioDivider" class="s-e5a1765a">or</div>
+      <button class="btn btn-secondary s-6a99e687" id="btnAppLockBio">🫆 Unlock with Face ID / Fingerprint</button>
+    </div>
+  </div>
+  <div class="header">
+    <div class="s-3b6fff87">
+      <button class="sidebar-toggle" id="btnSidebarToggle" title="Show family members">☰</button>
+      <h1>🏥 My Health</h1>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-secondary btn-sm s-hidden" id="btnConflicts">⚠️ Conflicts (<span id="conflictCount">0</span>)</button>
+      <button class="btn btn-secondary btn-sm" id="btnExport">📥 Export All</button>
+      <button class="btn btn-secondary btn-sm" id="btnExportMember">📤 Export Member</button>
+      <button class="btn btn-secondary btn-sm" id="btnImport">📥 Import</button>
+      <input type="file" id="importFile" accept=".json,.zip" class="s-cb458930">
+      <button class="btn btn-secondary btn-sm" id="btnZip">📦 Pack ZIP</button>
+      <button class="btn btn-secondary btn-sm" id="btnSecurity">🔒 Security</button>
+      <button class="btn btn-primary btn-sm" id="btnAddRecord">+ Add Record</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+    <div class="sidebar" id="sidebarPanel">
+      <div class="member-list" id="memberList"></div>
+      <button class="btn btn-secondary add-member-btn" id="btnAddMember">+ Add Member</button>
+      <button class="btn btn-secondary add-member-btn s-f86ef290" id="btnReset">🗑️ Clear All Data</button>
+      <button class="btn btn-secondary add-member-btn s-f86ef290" id="btnCompact">🗜️ Compact Photos</button>
+      <div id="storageMeter" class="s-21aa4b42"></div>
+    </div>
+
+    <div class="main" id="mainContent"></div>
+  </div>
+
+  <!-- Member Modal -->
+  <div class="modal-overlay" id="memberModal">
+    <div class="modal">
+      <div class="modal-header">Add Family Member</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input class="form-input" id="mName" placeholder="e.g. Dad">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Chinese Name (optional)</label>
+          <input class="form-input" id="mNameZh" placeholder="e.g. 爸爸">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Avatar Letter (from Chinese name)</label>
+          <select class="form-select" id="mNameZhAvatarIdx">
+            <option value="1">1st character</option>
+            <option value="2">2nd character</option>
+            <option value="3">3rd character</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Gender</label>
+          <select class="form-select" id="mGender">
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Birth Date</label>
+          <input class="form-input" type="date" id="mBirth">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Blood Type</label>
+          <select class="form-select" id="mBlood">
+            <option value="Unknown">Unknown</option>
+            <option value="A">A</option>
+            <option value="B">B</option>
+            <option value="AB">AB</option>
+            <option value="O">O</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Height (cm)</label>
+          <input class="form-input" type="number" id="mHeight" placeholder="170">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Blood Type Test Report (optional)</label>
+        <input type="file" id="mBloodAttachment" accept="image/*,.pdf" class="s-cb458930">
+        <div class="file-input-area s-3f866ca0" id="bloodFileDropArea">
+          <div class="s-c16bedce">📎 Click to attach proof (photo/PDF of blood test result)</div>
+        </div>
+        <div class="attachment-list" id="bloodAttachmentPreview"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Allergies</label>
+        <input class="form-input" id="mAllergies" placeholder="e.g. Penicillin, Peanuts (comma separated)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Medical History</label>
+        <textarea class="form-textarea" id="mHistory" placeholder="e.g. Hypertension for 5 years, appendectomy in 2020"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Emergency Contact</label>
+        <input class="form-input" id="mEmergency" placeholder="Name - Phone">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelMember">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveMember">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Record Modal -->
+  <div class="modal-overlay" id="recordModal">
+    <div class="modal">
+      <div class="modal-header">Add Health Record</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Date</label>
+          <input class="form-input" type="date" id="rDate">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Type</label>
+          <select class="form-select" id="rType">
+            <option value="Checkup">🏥 Checkup</option>
+            <option value="Vaccine">💉 Vaccine</option>
+            <option value="Illness">🤒 Illness</option>
+            <option value="Hospitalization">🚑 Hospitalization</option>
+            <option value="Medication">💊 Medication</option>
+            <option value="Lab Test">🔬 Lab Test</option>
+            <option value="Monitoring">📊 Monitoring</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Title</label>
+        <input class="form-input" id="rTitle" placeholder="e.g. Annual Physical">
+      </div>
+
+      <div id="vitalsSection">
+        <label class="form-label">Vitals (Optional)</label>
+        <div class="vitals-grid">
+          <div class="vital-input">
+            <input class="form-input" type="number" id="vSystolic" placeholder="120">
+            <div class="vital-unit">Systolic mmHg</div>
+          </div>
+          <div class="vital-input">
+            <input class="form-input" type="number" id="vDiastolic" placeholder="80">
+            <div class="vital-unit">Diastolic mmHg</div>
+          </div>
+          <div class="vital-input">
+            <input class="form-input" type="number" id="vHeartRate" placeholder="72">
+            <div class="vital-unit">Heart Rate bpm</div>
+          </div>
+          <div class="vital-input">
+            <input class="form-input" type="number" step="0.1" id="vTemp" placeholder="36.5">
+            <div class="vital-unit">Temp °C</div>
+          </div>
+          <div class="vital-input">
+            <input class="form-input" type="number" id="vGlucose" placeholder="5.6">
+            <div class="vital-unit">Glucose mmol/L</div>
+          </div>
+          <div class="vital-input">
+            <input class="form-input" type="number" step="0.1" id="vWeight" placeholder="65">
+            <div class="vital-unit">Weight kg</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group s-a8129340">
+        <label class="form-label">Details</label>
+        <textarea class="form-textarea" id="rDetails" placeholder="Symptoms, doctor notes, prescriptions..."></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tags (comma separated)</label>
+        <input class="form-input" id="rTags" placeholder="e.g. annual,cardio,followup">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Attachments (Photo / PDF)</label>
+        <input type="file" id="rAttachments" multiple accept="image/*,.pdf" class="s-cb458930">
+        <div class="file-input-area" id="fileDropArea">
+          <div class="s-9cc6e2bf">📎</div>
+          <div class="s-258b2104">Click to select files</div>
+          <div class="s-b19c5286">JPG, PNG, PDF supported - stored in the app, click any attachment later to view it</div>
+        </div>
+        <div class="attachment-list" id="attachmentPreview"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelRecord">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveRecord">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report Preview Modal -->
+  <div class="modal-overlay" id="reportModal">
+    <div class="modal s-aa203e33">
+      <div class="modal-header" id="reportModalTitle">Report Preview</div>
+      <div id="reportModalSummary" class="s-29081c18"></div>
+      <div id="reportModalAttachments"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelReport">Close</button>
+        <button class="btn btn-primary" id="btnPrintReport">👁️ View Report</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Attachment Viewer Modal (images/PDFs render in-page - no window.open,
+       which flickers/opens behind the app when installed as a standalone PWA) -->
+  <div class="modal-overlay" id="attachmentViewerModal">
+    <div class="modal s-903e43f6">
+      <div class="modal-header" id="attachmentViewerTitle">Attachment</div>
+      <div id="attachmentViewerBody" class="s-b5219e15"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCloseAttachmentViewer">Close</button>
+        <a class="btn btn-primary s-8fdce8d5" id="btnDownloadAttachment" download>⬇️ Download</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Reminder Modal -->
+  <div class="modal-overlay" id="reminderModal">
+    <div class="modal">
+      <div class="modal-header" id="reminderModalTitle">Add Reminder</div>
+      <div class="form-group">
+        <label class="form-label">Title</label>
+        <input class="form-input" id="cReminderTitle" placeholder="e.g. Hepatitis B Antibody Test">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Due Date</label>
+          <input class="form-input" type="date" id="cReminderDate">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Repeat</label>
+          <select class="form-select" id="cReminderRepeat">
+            <option value="0">Does not repeat</option>
+            <option value="6">Every 6 months</option>
+            <option value="12">Every year</option>
+            <option value="24">Every 2 years</option>
+            <option value="36">Every 3 years</option>
+            <option value="60">Every 5 years</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes (optional)</label>
+        <input class="form-input" id="cReminderNotes" placeholder="e.g. Check titre level, bring past results">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelReminder">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveReminder">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Conflict Review Modal (build order step 5) -->
+  <div class="modal-overlay" id="conflictModal">
+    <div class="modal s-conflict-modal">
+      <div class="modal-header">⚠️ Review Conflicting Edits</div>
+      <div class="s-06d0d891">
+        These fields or entries were edited on both sides since the last sync. Your device's version is showing for each right now — pick which to keep, or (where offered) keep both as separate entries.
+      </div>
+      <div id="conflictListBody"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCloseConflicts">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Security / Encryption Modal -->
+  <div class="modal-overlay" id="securityModal">
+    <div class="modal">
+      <div class="modal-header">🔒 Attachment Encryption</div>
+      <div id="securitySetupSection">
+        <p class="s-20172216">
+          Protect your stored photos/PDFs (health record documents) with a passcode.
+          Files are encrypted on this device using AES-256-GCM (via PBKDF2 key derivation) before being saved.
+        </p>
+        <p class="s-52b1c46e">
+          ⚠️ There is no password recovery. If you forget this passcode, encrypted attachments cannot be recovered — ever.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Create Passcode</label>
+          <input type="text" class="form-input s-passcode-mask" id="secPasscode1" placeholder="At least 6 characters" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Confirm Passcode</label>
+          <input type="text" class="form-input s-passcode-mask" id="secPasscode2" placeholder="Re-enter passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div id="secSetupError" class="s-e36c2361"></div>
+        <button class="btn btn-primary btn-sm" id="btnEnableEncryption">Enable Encryption</button>
+      </div>
+      <div id="securityManageSection" class="s-93b8ea5b">
+        <div class="s-bab615f4">
+          <span class="tag tag-green">🔒 Encryption ON</span>
+          <span id="secLockStatus" class="s-c16bedce"></span>
+        </div>
+        <div class="s-c1a0f1ad">
+          <button class="btn btn-secondary btn-sm" id="btnLockNow">🔒 Lock Now</button>
+          <button class="btn btn-secondary btn-sm" id="btnReencryptAll">Re-encrypt All Attachments</button>
+          <button class="btn btn-danger btn-sm" id="btnDisableEncryption">Disable Encryption</button>
+        </div>
+        <p class="s-c16bedce">💡 When you click Export / Pack ZIP, you'll get to choose per-export whether to encrypt that backup file.</p>
+
+        <div id="bioSection" class="s-632bb11a">
+          <div class="s-06847bd2">🫆 Face ID / Touch ID / Fingerprint</div>
+          <div id="bioNotSupported" class="s-e984adc0">This browser or device doesn't support biometric unlock (WebAuthn platform authenticator with PRF).</div>
+          <div id="bioEnrollBox" class="s-93b8ea5b">
+            <p class="s-c2c1a4cf">Unlock with your device's Face ID / Touch ID / fingerprint instead of typing your passcode every time. Confirm your current passcode once to set this up on this device.</p>
+            <div class="form-group">
+              <input type="text" class="form-input s-passcode-mask" id="bioConfirmPasscode" placeholder="Current passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </div>
+            <div id="bioSetupError" class="s-e36c2361"></div>
+            <button class="btn btn-secondary btn-sm" id="btnEnableBiometric">Enable Biometric Unlock</button>
+          </div>
+          <div id="bioEnabledBox" class="s-0add2754">
+            <span class="tag tag-green">🫆 Biometric unlock ON (this device)</span>
+            <button class="btn btn-danger btn-sm" id="btnRemoveBiometric">Remove</button>
+          </div>
+          <p class="s-8f340078">Biometric unlock is a per-device convenience: it's set up separately on each device/browser and never leaves this device.</p>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCloseSecurity">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unlock Modal (lazy prompt, shown only when an encrypted attachment is opened/added) -->
+  <div class="modal-overlay" id="unlockModal">
+    <div class="modal s-ffad898c">
+      <div class="modal-header">🔒 Unlock Attachments</div>
+      <p class="s-d163f8c4">Enter your passcode to view or add encrypted attachments.</p>
+      <button class="btn btn-secondary s-50204300" id="btnBioUnlock">🫆 Unlock with Face ID / Fingerprint</button>
+      <div id="bioUnlockDivider" class="s-79e8385f">or enter passcode</div>
+      <div class="form-group">
+        <input type="text" class="form-input s-passcode-mask" id="unlockPasscodeInput" placeholder="Passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="none">
+      </div>
+      <div class="numpad" id="unlockNumpad">
+        <button type="button" class="numpad-btn" data-numpad-digit="1">1</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="2">2</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="3">3</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="4">4</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="5">5</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="6">6</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="7">7</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="8">8</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="9">9</button>
+        <button type="button" class="numpad-btn numpad-btn-action" id="unlockNumpadToggle" title="Passcode has letters? Switch to keyboard">⌨️</button>
+        <button type="button" class="numpad-btn" data-numpad-digit="0">0</button>
+        <button type="button" class="numpad-btn numpad-btn-action" id="unlockNumpadBackspace" title="Backspace">⌫</button>
+      </div>
+      <div id="unlockError" class="s-e36c2361"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnUnlockCancel">Cancel</button>
+        <button class="btn btn-primary" id="btnUnlockSubmit">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Options Modal (encrypt-or-not toggle, shown before every export/backup download) -->
+  <div class="modal-overlay" id="exportOptionsModal">
+    <div class="modal s-40b89493">
+      <div class="modal-header" id="exportOptionsTitle">Export Backup</div>
+      <div class="toggle-row s-c58d5bea">
+        <label class="toggle-switch">
+          <input type="checkbox" id="exportEncryptToggle" checked>
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="s-21bd5059">🔒 Encrypt this backup</span>
+      </div>
+      <div id="exportEncryptOnNote" class="s-afed93ca"></div>
+      <div id="exportPasscodeFields" class="s-93b8ea5b">
+        <div class="form-group">
+          <label class="form-label">Set a Passcode for This Backup</label>
+          <input type="text" class="form-input s-passcode-mask" id="exportPasscode1" placeholder="At least 6 characters" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Confirm Passcode</label>
+          <input type="text" class="form-input s-passcode-mask" id="exportPasscode2" placeholder="Re-enter passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <p class="s-c16bedce">This passcode is only for this file — remember it, it's not saved anywhere. You'll need it (and this exact file) to import it back later.</p>
+      </div>
+      <p id="exportPlaintextWarning" class="s-3c9db3aa">
+        ⚠️ 明文备份不含密码保护，请妥善保管 — anyone with this file can open it directly.
+      </p>
+      <div id="exportOptionsError" class="s-0c35d232"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnExportOptionsCancel">Cancel</button>
+        <button class="btn btn-primary" id="btnExportOptionsConfirm">📥 Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Passcode Modal (shown when the imported file is an encrypted backup) -->
+  <div class="modal-overlay" id="importPasscodeModal">
+    <div class="modal s-ffad898c">
+      <div class="modal-header">🔒 Encrypted Backup</div>
+      <p class="s-d163f8c4">This backup file is encrypted. Enter the passcode it was created with.</p>
+      <div class="form-group">
+        <input type="text" class="form-input s-passcode-mask" id="importPasscodeInput" placeholder="Passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </div>
+      <div id="importPasscodeError" class="s-e36c2361"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnImportPasscodeCancel">Cancel</button>
+        <button class="btn btn-primary" id="btnImportPasscodeSubmit">Decrypt & Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="printContainer"></div>
+
+  <script src="merge-engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

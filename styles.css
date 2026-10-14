@@ -1,0 +1,486 @@
+/* My Health — main stylesheet
+   Extracted from index.html's inline <style> block on 2026-09-23, as part of
+   moving style-src off byte-exact hash-locking and onto 'self' (same fix
+   already used for script-src / app.js). See the CSP design-note comment
+   in index.html (section 3, style-src) for the full history of why. */
+
+    :root {
+      --bg: #f5f7fa;
+      --surface: #ffffff;
+      --text: #1a1a2e;
+      --text-secondary: #6b7280;
+      --primary: #0d9488;
+      --primary-light: #ccfbf1;
+      --danger: #ef4444;
+      --danger-light: #fee2e2;
+      --warning: #f59e0b;
+      --warning-light: #fef3c7;
+      --success: #10b981;
+      --success-light: #d1fae5;
+      --border: #e5e7eb;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+
+    .header { background: var(--surface); padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .header h1 { font-size: 20px; font-weight: 700; color: var(--primary); }
+    .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: var(--danger-light); color: var(--danger); }
+    .btn-sm { padding: 6px 12px; font-size: 13px; }
+
+    .container { display: flex; height: calc(100vh - 65px); position: relative; }
+    .sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; transition: transform 0.25s ease; }
+    .main { flex: 1; overflow-y: auto; padding: 20px; min-width: 0; }
+    .sidebar-toggle { display: none; }
+    .sidebar-backdrop { display: none; }
+
+    @media (max-width: 768px) {
+      .sidebar-toggle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--surface); font-size: 18px; cursor: pointer; flex-shrink: 0;
+      }
+      .container { display: block; height: calc(100vh - 65px); }
+      .sidebar {
+        position: fixed; top: 65px; left: 0; bottom: 0;
+        width: 82%; max-width: 300px; z-index: 200;
+        transform: translateX(-100%);
+        box-shadow: 2px 0 16px rgba(0,0,0,0.2);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-backdrop.open {
+        display: block; position: fixed; top: 65px; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.35); z-index: 150;
+      }
+      .main { width: 100%; padding: 16px; }
+    }
+
+    /* Tablet (touch, wider than phone): collapse sidebar to an avatar-only
+       rail by default; tap the toggle to expand it as an overlay, same
+       mechanics as the mobile off-canvas sidebar. Scoped to touch-only
+       pointers (hover:none + pointer:coarse) rather than a width breakpoint,
+       so it targets tablets specifically and never affects mouse-driven
+       desktops/laptops, no matter their window width. */
+    @media (min-width: 769px) and (hover: none) and (pointer: coarse) {
+      .sidebar-toggle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--surface); font-size: 18px; cursor: pointer; flex-shrink: 0;
+      }
+      .sidebar {
+        width: 76px;
+        transition: width 0.22s ease;
+      }
+      .sidebar .member-list { padding: 12px 6px; }
+      .sidebar .member-item { justify-content: center; gap: 0; padding: 10px 4px; }
+      .sidebar .member-info,
+      .sidebar .add-member-btn,
+      .sidebar #storageMeter,
+      .sidebar .member-delete { display: none; }
+
+      .sidebar.open {
+        position: fixed; top: 65px; left: 0; bottom: 0;
+        width: 82%; max-width: 300px; z-index: 200;
+        box-shadow: 2px 0 16px rgba(0,0,0,0.2);
+      }
+      .sidebar.open .member-list { padding: 12px; }
+      .sidebar.open .member-item { justify-content: flex-start; gap: 12px; padding: 12px; }
+      .sidebar.open .member-info,
+      .sidebar.open .add-member-btn,
+      .sidebar.open #storageMeter { display: block; }
+      /* Touch devices don't reliably fire :hover, so once expanded show the
+         delete "x" outright instead of relying on hover-to-reveal. */
+      .sidebar.open .member-delete { display: flex; opacity: 1; }
+
+      .sidebar-backdrop.open {
+        display: block; position: fixed; top: 65px; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.35); z-index: 150;
+      }
+    }
+
+    .member-list { padding: 12px; }
+    .member-item { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: var(--radius); cursor: pointer; transition: all 0.2s; margin-bottom: 4px; }
+    .member-item:hover { background: var(--bg); }
+    .member-item.active { background: var(--primary-light); }
+    .member-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 16px; }
+    .member-info { flex: 1; }
+    .member-name { font-weight: 600; font-size: 14px; }
+    .member-meta { font-size: 12px; color: var(--text-secondary); }
+    .add-member-btn { width: calc(100% - 24px); margin: 0 12px 12px; }
+
+    .card { background: var(--surface); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+    .card-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .stat-box { background: var(--bg); border-radius: 10px; padding: 16px; text-align: center; }
+    .stat-value { font-size: 24px; font-weight: 700; color: var(--primary); }
+    .stat-label { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+
+    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .info-item { display: flex; flex-direction: column; gap: 4px; }
+    .info-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+    .info-value { font-size: 15px; font-weight: 600; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+    .tag-red { background: var(--danger-light); color: var(--danger); }
+    .tag-green { background: var(--success-light); color: var(--success); }
+    .tag-yellow { background: var(--warning-light); color: var(--warning); }
+    .tag-gray { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
+
+
+    .timeline { position: relative; padding-left: 24px; }
+    .timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+    .timeline-item { position: relative; margin-bottom: 16px; }
+    .timeline-dot { position: absolute; left: -20px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--primary); border: 2px solid var(--surface); }
+    .timeline-dot.red { background: var(--danger); }
+    .timeline-dot.yellow { background: var(--warning); }
+    .timeline-dot.green { background: var(--success); }
+    .timeline-dot.purple { background: #8b5cf6; }
+    .timeline-content { background: var(--bg); border-radius: 10px; padding: 12px 16px; }
+    .timeline-date { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+    .timeline-title { font-weight: 600; font-size: 14px; }
+    .timeline-desc { font-size: 13px; color: var(--text-secondary); margin-top: 4px; white-space: pre-wrap; }
+    .timeline-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+    .chart-container { height: 200px; position: relative; }
+    .chart-svg { width: 100%; height: 100%; }
+
+    .reminder-list { display: flex; flex-direction: column; gap: 8px; }
+    .reminder-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg); border-radius: 10px; }
+    .reminder-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+    .reminder-icon.overdue { background: var(--danger-light); }
+    .reminder-icon.upcoming { background: var(--warning-light); }
+    .reminder-icon.ok { background: var(--success-light); }
+    .reminder-text { flex: 1; }
+    .reminder-title { font-weight: 600; font-size: 14px; }
+    .reminder-date { font-size: 12px; color: var(--text-secondary); }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 100; }
+    /* Attachment viewer can be opened from inside another modal (e.g. the record
+       modal) - it must always render above whichever modal is already open,
+       regardless of each element's position in the HTML source order. */
+    #attachmentViewerModal { z-index: 200; background: rgba(0,0,0,0.85); }
+    .modal-overlay.active { display: flex; }
+    .modal { background: var(--surface); border-radius: var(--radius); width: 90%; max-width: 520px; max-height: 90vh; overflow-y: auto; padding: 24px; position: relative; }
+    .modal-close-x { position: absolute; top: 14px; right: 14px; cursor: pointer; font-size: 18px; line-height: 1; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--text-secondary); z-index: 5; }
+    .modal-close-x:hover { background: var(--bg); color: var(--text); }
+
+    .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--border); border-radius: 24px; transition: 0.2s; }
+    .toggle-slider::before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.2s; }
+    .toggle-switch input:checked + .toggle-slider { background: var(--primary); }
+    .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); }
+    .toggle-switch input:disabled + .toggle-slider { opacity: 0.5; cursor: not-allowed; }
+    .toggle-row { display: flex; align-items: center; gap: 12px; }
+    .modal-header { font-size: 18px; font-weight: 700; margin-bottom: 20px; padding-right: 32px; }
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text-secondary); }
+    .form-input, .form-select, .form-textarea { width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--surface); color: var(--text); }
+    .form-input:focus, .form-select:focus, .form-textarea:focus { outline: none; border-color: var(--primary); }
+    .form-textarea { min-height: 80px; resize: vertical; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--bg); padding: 4px; border-radius: 10px; }
+    .tab { flex: 1; padding: 8px; text-align: center; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; border: none; background: transparent; color: var(--text-secondary); }
+    .tab.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+
+    .vitals-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .vital-input { text-align: center; }
+    .vital-input .form-input { text-align: center; font-size: 18px; font-weight: 700; }
+    .vital-unit { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+    .attachment-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .attachment-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg); border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+    .attachment-item:hover { background: var(--primary-light); }
+    .attachment-thumb { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; background: var(--border); display: flex; align-items: center; justify-content: center; font-size: 20px; overflow: hidden; }
+    .attachment-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+    .attachment-info { flex: 1; min-width: 0; }
+    .attachment-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .attachment-path { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .attachment-remove { padding: 4px 8px; font-size: 12px; color: var(--danger); cursor: pointer; border-radius: 4px; }
+    .attachment-remove:hover { background: var(--danger-light); }
+
+    .file-input-area { border: 2px dashed var(--border); border-radius: 10px; padding: 20px; text-align: center; cursor: pointer; transition: all 0.2s; }
+    .file-input-area:hover { border-color: var(--primary); background: var(--primary-light); }
+    .file-input-area input { display: none; }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+    .member-delete { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--text-secondary); cursor: pointer; opacity: 0; transition: all 0.2s; }
+    .member-item:hover .member-delete { opacity: 1; }
+    .member-delete:hover { background: var(--danger-light); color: var(--danger); }
+
+    /* ===== Auto-generated utility classes (CSP hardening, 2026-08-10) =====
+       Replaces every inline style="..." attribute in the main app UI (index.html
+       + app.js) so style-src can drop 'unsafe-inline'. Each class name is a hash
+       of its exact declaration block, generated mechanically from the original
+       inline values -- so this is a 1:1 move, not a redesign; rendering should be
+       byte-for-byte identical to before. Do not hand-edit class NAMES here (they
+       must match the hash of their content) -- edit values, or add new ones, via
+       the same generation approach if this file changes again.
+       As of v41-v44 (2026-09-20) this also covers the 9 print reports
+       (printEmergency, printBPLog, insOpenPrintWindow, etc.) -- they used
+       to write out separate popup documents with their own more permissive
+       CSP, but that popup architecture has been fully retired, superseded
+       by the shared in-page #printContainer approach below; the reports now
+       render under this same style-src and use only these classes plus the
+       .pr-, .pe-, .pir-, .rpt- report classes further down, no inline style
+       attributes anywhere. */
+.s-00642396 { position:fixed;right:8px;bottom:6px;z-index:10001;font-size:10px;line-height:1;color:var(--text-secondary);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:3px 7px;opacity:0.75;pointer-events:none;font-family:monospace; }
+.s-0100dc7f { color:var(--danger);font-size:12px;margin-bottom:12px;text-align:center; }
+.s-02225414 { text-align:center;font-size:13px;color:var(--text-secondary);margin-bottom:20px; }
+.s-06847bd2 { font-weight:600;font-size:13px;margin-bottom:8px; }
+.s-06d0d891 { font-size:12px;color:var(--text-secondary);margin-bottom:12px; }
+.s-0add2754 { display:none;align-items:center;gap:10px;flex-wrap:wrap; }
+.s-0c35d232 { color:var(--danger);font-size:12px;margin-top:8px; }
+.s-0cc925bc { margin-left:auto;display:flex;gap:8px; }
+.s-0e7d5f49 { max-width:380px;width:100%;background:var(--surface);border-radius:var(--radius);padding:32px;box-shadow:var(--shadow); }
+.s-0f5283bc { text-align:center;font-size:40px;margin-bottom:12px; }
+.s-140c3f9b { display:flex;align-items:flex-start;justify-content:space-between;gap:8px; }
+.s-1952d609 { display:flex;gap:8px; }
+.s-198fb7f4 { background:var(--bg);padding:10px 12px;border-radius:8px; }
+.s-19e87f8e { opacity:1; }
+.s-20172216 { font-size:13px;color:var(--text-secondary);margin-bottom:14px; }
+.s-21aa4b42 { margin-top:10px;padding:8px 10px;font-size:11px;color:var(--text-secondary);background:var(--bg);border-radius:8px; }
+.s-21bd5059 { font-size:14px;font-weight:600; }
+.s-2447f692 { display:flex;justify-content:space-between;align-items:center; }
+.s-244a7f30 { text-align:left; }
+.s-258b2104 { font-size: 13px; color: var(--text-secondary); }
+.s-29081c18 { font-size:13px;color:var(--text-secondary);margin-bottom:16px; }
+.s-2c4ad88d { height:6px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin:5px 0; }
+.s-33a0a182 { display:flex;justify-content:space-between;align-items:center;margin-bottom:8px; }
+.s-3b6fff87 { display:flex;align-items:center;gap:10px; }
+.s-3c9db3aa { display:none;font-size:12px;background:var(--warning-light);color:#92620a;padding:8px 10px;border-radius:8px; }
+.s-3d9b1e10 { padding:20px;text-align:center;color:var(--text-secondary);font-size:13px; }
+.s-3f866ca0 { padding:12px; }
+.s-40b89493 { max-width:420px; }
+.s-441dff46 { font-size: 48px; margin-bottom: 16px; }
+.s-50204300 { display:none;width:100%;margin-bottom:10px; }
+.s-51f2817c { color:var(--text-secondary);font-size:13px; }
+.s-52b1c46e { font-size:12px;background:var(--danger-light);color:var(--danger);padding:8px 10px;border-radius:8px;margin-bottom:14px; }
+.s-58aba575 { cursor:pointer; }
+.s-5c9fd965 { white-space:pre-wrap; }
+.s-5ea608c5 { font-weight:400;color:var(--text-secondary); }
+.s-605d40a3 { font-size:14px;font-weight:400;color:var(--text-secondary); }
+.s-61908f99 { padding:40px;text-align:center;color:#dc2626; }
+.s-632bb11a { border-top:1px solid var(--border);margin-top:16px;padding-top:14px; }
+.s-65a77d96 { position:fixed;inset:0;background:var(--bg);z-index:9999;display:none;align-items:center;justify-content:center;padding:20px; }
+.s-6a99e687 { display:none;width:100%; }
+.s-7137c2f6 { display:flex;flex-wrap:wrap;gap:8px; }
+.s-72724f51 { margin-top:16px;padding-top:16px;border-top:1px solid var(--border); }
+.s-738e228b { font-size:22px;font-weight:700; }
+.s-78f6f2c9 { margin-top:12px; }
+.s-79744520 { margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center; }
+.s-79e8385f { display:none;text-align:center;font-size:11px;color:var(--text-secondary);margin:6px 0; }
+.s-828bc405 { margin-top:6px;font-size:14px;line-height:1.6; }
+.s-8588e44d { width:100%; }
+.s-8f340078 { font-size:11px;color:var(--text-secondary);margin-top:8px; }
+.s-8fdce8d5 { text-decoration:none; }
+.s-903e43f6 { max-width:95vw; width:95vw; max-height:88vh; padding:0; display:flex; flex-direction:column; overflow:hidden; }
+.s-903e43f6 .modal-header { flex-shrink:0; margin-bottom:0; padding:16px 16px 10px; word-break:break-all; }
+.s-903e43f6 .modal-actions { flex-shrink:0; margin-top:0; padding:14px 16px; border-top:1px solid var(--border-color); flex-wrap:wrap; }
+.s-9155c939 { color:var(--text-secondary); }
+.s-93b8ea5b { display:none; }
+.s-99a28ff6 { display:none;position:fixed;top:0;left:0;right:0;z-index:10000;background:#f59e0b;color:#1a1a2e;font-size:12px;text-align:center;padding:4px 8px; }
+.s-9cc6e2bf { font-size: 24px; margin-bottom: 8px; }
+.s-a043ed1c { font-size:13px;font-weight:600; }
+.s-a251dbd6 { display:flex; align-items:center; gap:16px; margin-bottom:20px; }
+.s-a2d48c76 { margin-bottom:0; }
+.s-a8129340 { margin-top: 16px; }
+.s-aa203e33 { max-width:600px; }
+.s-af9923da { cursor:pointer;font-size:13px;color:var(--primary); }
+.s-afed93ca { font-size:12px;color:var(--text-secondary);margin-bottom:10px; }
+.s-b19c5286 { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.s-b5219e15 { display:flex;flex-direction:column;align-items:center;gap:12px;flex:1 1 auto;min-height:0;overflow-y:auto;background:var(--bg);padding:12px 16px; }
+.s-b9373de3 { color:var(--text-secondary);text-align:center;padding:40px; }
+.s-bab615f4 { display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap; }
+.s-bdfc2dc5 { text-align:center;font-size:18px;margin-bottom:8px; }
+.s-c16bedce { font-size:12px;color:var(--text-secondary); }
+.s-c1a0f1ad { display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap; }
+.s-c2c1a4cf { font-size:12px;color:var(--text-secondary);margin-bottom:8px; }
+.s-c58d5bea { margin-bottom:10px; }
+.s-c6889a29 { max-height:260px;overflow-y:auto; }
+.s-cb458930 { display:none; }
+.s-cf36fb90 { color:var(--primary); }
+.s-d163f8c4 { font-size:13px;color:var(--text-secondary);margin-bottom:12px; }
+.s-d3277930 { margin-bottom: 16px; }
+.s-d79ce2bc { margin-top:8px; }
+.s-da0fa578 { display:flex;gap:8px;margin-top:4px; }
+.s-db2a3573 { padding:40px;text-align:center;color:var(--muted,#666); }
+.s-dbb46795 { font-size: 20px; margin-bottom: 8px; }
+.s-e36c2361 { color:var(--danger);font-size:12px;margin-bottom:8px; }
+.s-e5a1765a { display:none;text-align:center;font-size:11px;color:var(--text-secondary);margin:12px 0; }
+.s-e984adc0 { display:none;font-size:12px;color:var(--text-secondary); }
+.s-ea8a0de7 { font-weight:600;font-size:13px; }
+.s-ebc463b1 { font-size:12px;color:var(--text-secondary);margin-top:6px; }
+.s-ec1740b6 { margin-right:10px;flex-shrink:0; }
+.s-ef34e083 { display:flex;gap:4px;flex-shrink:0; }
+.s-f18fd9a2 { width:56px;height:56px;border-radius:50%;background:var(--primary);color:white;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700; }
+.s-f86ef290 { margin-top:4px;font-size:12px; }
+.s-ffad898c { max-width:380px; }
+
+    /* Added by hand for the style="..." attrs whose values were genuinely dynamic
+       (per-render) -- these couldn't be auto-extracted since their content isn't
+       valid CSS until the template literal resolves. See app.js:
+       updateStorageMeter(). */
+    .s-hidden { display:none; }
+    /* Conflict Review Modal's width override -- was a leftover raw style="max-width:640px"
+       attribute that survived the original inline-style cleanup and was silently blocked by
+       CSP (no 'unsafe-inline'), so this modal was stuck at the default .modal max-width. */
+    .s-conflict-modal { max-width:640px; }
+    /* All 8 passcode fields in this app (unlock screen, security settings, export/import)
+       intentionally use type="text" + this CSS mask instead of type="password". They're
+       local encryption passcodes, not website login credentials, but Chrome doesn't know
+       that -- it offers to save/autofill ANY <input type="password"> present anywhere on
+       the page, even without a <form>, and even for fields that are currently hidden in a
+       modal. With 8 such fields always sitting in the DOM, that was firing Chrome's "Save
+       password?" prompt on unrelated actions like Add Member. -webkit-text-security is the
+       standard workaround: masks the input visually like a password field without Chrome's
+       password-manager heuristics recognizing it as one. Works in Chrome/Safari/Edge; if a
+       browser doesn't support it (older Firefox), the text just shows in plain -- an
+       acceptable trade-off here since the only thing lost is shoulder-surfing protection on
+       an unsupported browser, not encryption strength (the actual encryption is unaffected;
+       this is purely a visual masking / browser-heuristic concern). */
+    .s-passcode-mask { -webkit-text-security: disc; text-security: disc; }
+    /* On-screen numpad for the two "enter your existing passcode" screens
+       (app lock screen + attachment unlock modal). Paired with
+       inputmode="none" on the passcode <input> above, which stops the OS
+       virtual keyboard from popping up when that field gets focus/programmatic
+       value changes -- tapping a numpad button never calls .focus() on the
+       input, it only writes to .value, so the keyboard stays down on mobile.
+       The ⌨️ button flips inputmode back to text and focuses the input, for
+       the (uncommon but supported) case of a passcode containing letters. */
+    .numpad { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin: 2px 0 16px; }
+    .numpad-btn { padding:16px 0; font-size:22px; font-weight:600; line-height:1; border-radius:10px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; user-select:none; }
+    .numpad-btn:active { background:var(--primary-light); border-color:var(--primary); }
+    .numpad-btn-action { font-size:17px; color:var(--text-secondary); background:var(--bg); }
+    @media (min-width: 480px) {
+      .numpad-btn { padding:20px 0; font-size:26px; }
+      .numpad-btn-action { font-size:19px; }
+    }
+    .s-quotafill { height:100%; border-radius:999px; }
+
+    /* ===== In-app print reports (build order: Emergency Card first, see
+       README changelog) ===== 
+       This replaced the old window.open('','_blank')+document.write popup
+       approach that all 9 reports (Emergency Card included) originally
+       used, where each report wrote an entirely separate document with its
+       own relaxed per-page CSP. As of v41-v44 (2026-09-20) that popup
+       architecture is fully retired - all 9 reports print in-page instead,
+       which means the report HTML lives under this page's OWN (tighter)
+       CSP, so: no inline style block or style="..." attributes anywhere in
+       report markup (style-src only allows this hash-locked block, not
+       'unsafe-inline') - report elements are styled via the plain classes
+       below instead; and no embed/object tag for PDF preview (object-src
+       'none' here, unlike the old popups' object-src data:) - PDF pages
+       render via the same pdf.js-to-canvas approach the attachment viewer
+       already uses (see openAttachment).
+       #printContainer is hidden on screen and only shown for @media print,
+       which also hides everything else so only the report comes out.
+       NOTE FOR FUTURE EDITS: this comment must never contain the literal
+       text "style" wrapped in angle brackets, or "/style" wrapped in
+       angle brackets either - regen-style-hash.py locates this block by
+       searching for those exact substrings, and a comment that happens to
+       contain one throws its boundary detection off, silently producing a
+       hash for the wrong span. Ask if a rewrite needs to reference the
+       tag by name; there are ways to phrase it that do not confuse the
+       script. */
+    #printContainer { display: none; }
+    @media print {
+      body > *:not(#printContainer) { display: none !important; }
+      #printContainer { display: block !important; }
+    }
+    .pe-card { border: 3px solid #dc2626; border-radius: 12px; padding: 20px; max-width: 400px; margin: 0 auto; font-family: Arial, sans-serif; }
+    .pe-title { color: #dc2626; text-align: center; margin: 0 0 16px; font-size: 22px; }
+    .pe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .pe-item { background: #fef2f2; padding: 10px; border-radius: 8px; }
+    .pe-label { font-size: 11px; color: #666; text-transform: uppercase; }
+    .pe-value { font-size: 16px; font-weight: bold; margin-top: 2px; }
+    .pe-full { grid-column: 1 / -1; }
+    .pe-alert { background: #dc2626; color: white; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; }
+    .pe-footer { text-align:center; color:#666; font-size:12px; margin-top:16px; }
+    .pe-att-img { max-width:100%; border-radius:6px; margin-top:6px; display:block; }
+    .pe-history-value { font-size:14px; }
+    .pe-att-block { margin-top:10px; }
+
+    /* ===== Shared print-report layout (the other 8 print reports,
+       converted to in-page printing alongside Emergency Card - see the
+       README changelog for the full list). One generic layout plus a
+       small set of theme-color modifier classes, since all these reports
+       share the same title/info-grid/table/footer shape and only differ
+       in accent color and which pieces they use. */
+    .pr-page { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }
+    .pr-page.pr-wide { max-width: 900px; }
+    .pr-h1 { border-bottom: 3px solid currentColor; padding-bottom: 10px; margin-bottom: 10px; }
+    .pr-h2 { font-size: 18px; margin-top: 30px; }
+    .pr-h3 { margin-bottom: 10px; }
+    .pr-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0; }
+    .pr-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+    .pr-box { background: #f5f7fa; padding: 15px; border-radius: 8px; text-align: left; }
+    .pr-box-center { text-align: center; }
+    .pr-box-label { font-size: 11px; color: #666; text-transform: uppercase; }
+    .pr-box-value { font-size: 18px; font-weight: bold; margin-top: 5px; }
+    .pr-box-value-lg { font-size: 28px; font-weight: bold; margin-top: 5px; }
+    .pr-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    .pr-table th { padding: 10px; text-align: left; color: #fff; }
+    .pr-table td { padding: 10px; border-bottom: 2px solid #94a3b8; }
+    .pr-table.pr-table-center th, .pr-table.pr-table-center td { text-align: center; }
+    .pr-table tr:nth-child(even) { background: #f9fafb; }
+    .pr-alert { background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0; border-radius: 4px; }
+    .pr-info-row { background: #f5f7fa; padding: 15px; border-radius: 8px; margin: 20px 0; display:flex; gap:30px; flex-wrap:wrap; font-size:14px; }
+    .pr-footer { text-align: center; color: #999; font-size: 12px; margin-top: 40px; }
+    .pr-empty { text-align: center; padding: 40px; color: #999; }
+    .pr-legend { display: flex; gap: 20px; margin: 15px 0; font-size: 13px; }
+    .pr-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .pr-dot { width: 12px; height: 12px; border-radius: 50%; display:inline-block; }
+    .pr-dot-red { background:#ef4444; }
+    .pr-dot-green { background:#10b981; }
+    .pr-dot-amber { background:#f59e0b; }
+    .pr-badge { color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; display: inline-block; margin-bottom: 10px; }
+    .pr-goals { background: #ecfdf5; padding: 20px; border-radius: 8px; margin-top: 20px; }
+    .pr-goals ul { margin-left: 20px; }
+    .pr-status-high { color:#ef4444; font-weight:bold; }
+    .pr-status-low { color:#f59e0b; font-weight:bold; }
+    .pr-status-normal { color:#10b981; font-weight:bold; }
+    .pr-abnormal { color: #ef4444; font-weight: bold; }
+    .pr-att-img { max-width:100%; border:1px solid #e5e7eb; border-radius:8px; display:block; }
+    .pr-att-block { margin: 15px 0; }
+    .pr-att-item { margin-bottom: 16px; }
+    .pr-att-item-label { font-size: 13px; margin-bottom: 6px; }
+    .pr-note { font-size:11px; color:#999; margin-top:8px; }
+    .pr-accent { border-top: 4px solid #0d9488; }
+    .pr-table-total-row { font-weight:bold; background:#ccfbf1; }
+    .pr-goals h3 { color: #0d9488; }
+
+    .pr-teal .pr-h1, .pr-teal .pr-h2 { color: #0d9488; }
+    .pr-teal .pr-table th { background: #0d9488; }
+    .pr-teal .pr-box-value, .pr-teal .pr-box-value-lg, .pr-teal .pr-badge { color: #0d9488; }
+    .pr-teal .pr-badge { background: #0d9488; color:#fff; }
+    .pr-teal .pr-box.pr-accent { border-top: 4px solid #0d9488; }
+
+    .pr-green .pr-h1 { color: #10b981; }
+    .pr-green .pr-table th { background: #10b981; }
+
+    .pr-amber .pr-h1 { color: #f59e0b; }
+    .pr-amber .pr-table th { background: #f59e0b; }
+
+    .pr-purple .pr-h1 { color: #8b5cf6; }
+    .pr-purple .pr-table th { background: #8b5cf6; }
+
+    .pr-red .pr-h1 { color: #ef4444; }
+    .pr-red .pr-table th { background: #ef4444; }
+    .pr-red .pr-box-value-lg { color: #ef4444; }
+
+    .pr-blue .pr-h1 { color: #3b82f6; }
+    .pr-blue .pr-table th { background: #3b82f6; }
+    .pr-blue .pr-box-value { color: #3b82f6; }
+
+  
