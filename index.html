@@ -218,12 +218,19 @@
     </div>
     <div class="header-actions">
       <button class="btn btn-secondary btn-sm s-hidden" id="btnConflicts">⚠️ Conflicts (<span id="conflictCount">0</span>)</button>
-      <button class="btn btn-secondary btn-sm" id="btnExport">📥 Export All</button>
-      <button class="btn btn-secondary btn-sm" id="btnExportMember">📤 Export Member</button>
-      <button class="btn btn-secondary btn-sm" id="btnImport">📥 Import</button>
       <input type="file" id="importFile" accept=".json,.zip" class="s-cb458930">
-      <button class="btn btn-secondary btn-sm" id="btnZip">📦 Pack ZIP</button>
-      <button class="btn btn-secondary btn-sm" id="btnSecurity">🔒 Security</button>
+      <div class="more-wrap">
+        <button type="button" class="btn btn-secondary btn-sm" id="btnMore" aria-haspopup="true" aria-expanded="false">⋯ More</button>
+        <div class="more-menu" id="moreMenu" role="menu">
+          <button type="button" class="more-item" role="menuitem" id="btnExport">📥 Export All</button>
+          <button type="button" class="more-item" role="menuitem" id="btnExportMember">📤 Export Member</button>
+          <div class="more-sep"></div>
+          <button type="button" class="more-item" role="menuitem" id="btnImport">📥 Import</button>
+          <button type="button" class="more-item" role="menuitem" id="btnZip">📦 Pack ZIP</button>
+          <div class="more-sep"></div>
+          <button type="button" class="more-item" role="menuitem" id="btnSecurity">🔒 Security</button>
+        </div>
+      </div>
       <button class="btn btn-primary btn-sm" id="btnAddRecord">+ Add Record</button>
     </div>
   </div>

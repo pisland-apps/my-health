@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v55';
+    const APP_VERSION = 'v56';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1637,6 +1637,23 @@
       document.getElementById('btnZip').addEventListener('click', () => openExportOptionsModal('zip'));
       document.getElementById('btnAddRecord').addEventListener('click', () => openModal('record'));
 
+      // "More" dropdown (Export / Import / Pack ZIP / Security)
+      (function () {
+        const btn = document.getElementById('btnMore');
+        const menu = document.getElementById('moreMenu');
+        const setOpen = (open) => { menu.classList.toggle('open', open); btn.setAttribute('aria-expanded', open ? 'true' : 'false'); };
+        btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!menu.classList.contains('open')); });
+        menu.addEventListener('click', () => setOpen(false));
+        document.addEventListener('click', (e) => { if (!menu.contains(e.target) && e.target !== btn) setOpen(false); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
+      })();
+
+      // Expand / collapse long reminder notes
+      document.addEventListener('click', (e) => {
+        const n = e.target.closest('[data-toggle-notes]');
+        if (n) n.classList.toggle('open');
+      });
+
       // Sidebar buttons
       document.getElementById('btnAddMember').addEventListener('click', () => openModal('member'));
       document.getElementById('btnSidebarToggle').addEventListener('click', () => toggleSidebar());
@@ -1875,12 +1892,12 @@
         <div class="card">
           <div class="card-title">📋 Basic Info</div>
           <div class="info-grid">
-            <div class="info-item"><div class="info-label">Height</div><div class="info-value">${m.height || '--'} cm</div></div>
-            <div class="info-item"><div class="info-label">Weight</div><div class="info-value">${latestVitals.weight || '--'} kg</div></div>
-            <div class="info-item"><div class="info-label">Blood Type</div><div class="info-value">${escapeHtml(m.blood)}${m.bloodTypeAttachment ? ` <span id="btnViewBloodAttachment2" title="View attached blood type test report" class="s-af9923da">📎 view</span>` : ''}</div></div>
-            <div class="info-item"><div class="info-label">BMI</div><div class="info-value">${bmi}</div></div>
-            <div class="info-item"><div class="info-label">Birth Date</div><div class="info-value">${escapeHtml(m.birth) || '--'}</div></div>
-            <div class="info-item"><div class="info-label">Emergency</div><div class="info-value">${escapeHtml(m.emergency) || '--'}</div></div>
+            <div class="info-item"><div class="info-label">Height</div><div class="info-value">${m.height ? m.height + ' cm' : '<span class="empty-val">—</span>'}</div></div>
+            <div class="info-item"><div class="info-label">Weight</div><div class="info-value">${latestVitals.weight ? latestVitals.weight + ' kg' : '<span class="empty-val">—</span>'}</div></div>
+            <div class="info-item"><div class="info-label">Blood Type</div><div class="info-value">${escapeHtml(m.blood)}${m.bloodTypeAttachment ? ` <span id="btnViewBloodAttachment2" title="View attached blood type test report" class="blood-report-chip">📎 Test report</span>` : ''}</div></div>
+            <div class="info-item"><div class="info-label">BMI</div><div class="info-value">${bmi && bmi !== '--' ? bmi : '<span class="empty-val">—</span>'}</div></div>
+            <div class="info-item"><div class="info-label">Birth Date</div><div class="info-value">${escapeHtml(m.birth) || '<span class="empty-val">—</span>'}</div></div>
+            <div class="info-item"><div class="info-label">Emergency</div><div class="info-value">${escapeHtml(m.emergency) || '<span class="empty-val">—</span>'}</div></div>
           </div>
           <div class="s-72724f51">
             <div class="info-label">Medical History</div>
@@ -1892,19 +1909,19 @@
           <div class="card-title">📊 Latest Vitals</div>
           <div class="stats-grid">
             <div class="stat-box">
-              <div class="stat-value">${latestVitals.systolic || '--'}/${latestVitals.diastolic || '--'}</div>
+              <div class="stat-value${latestVitals.systolic || latestVitals.diastolic ? '' : ' empty'}">${latestVitals.systolic || latestVitals.diastolic ? (latestVitals.systolic || '--') + '/' + (latestVitals.diastolic || '--') : '—'}</div>
               <div class="stat-label">BP mmHg</div>
             </div>
             <div class="stat-box">
-              <div class="stat-value">${latestVitals.heartRate || '--'}</div>
+              <div class="stat-value${latestVitals.heartRate ? '' : ' empty'}">${latestVitals.heartRate || '—'}</div>
               <div class="stat-label">HR bpm</div>
             </div>
             <div class="stat-box">
-              <div class="stat-value">${latestVitals.glucose || '--'}</div>
+              <div class="stat-value${latestVitals.glucose ? '' : ' empty'}">${latestVitals.glucose || '—'}</div>
               <div class="stat-label">Glucose mmol/L</div>
             </div>
             <div class="stat-box">
-              <div class="stat-value">${latestVitals.temp || '--'}</div>
+              <div class="stat-value${latestVitals.temp ? '' : ' empty'}">${latestVitals.temp || '—'}</div>
               <div class="stat-label">Temp °C</div>
             </div>
           </div>
@@ -1919,7 +1936,9 @@
                 <div class="reminder-text">
                   <div class="reminder-title">${r.title}</div>
                   <div class="reminder-date">${r.date}</div>
+                  ${r.notes ? `<div class="reminder-notes" data-toggle-notes role="button" tabindex="0" title="Tap to expand">${r.notes}</div>` : ''}
                 </div>
+                ${r.status !== 'ok' ? `<span class="tag ${r.status === 'overdue' ? 'tag-red' : 'tag-yellow'}">${r.statusText}</span>` : ''}
               </div>
             `).join('') || '<p class="s-9155c939">No reminders</p>'}
           </div>
@@ -1927,14 +1946,14 @@
 
         <div class="card">
           <div class="card-title">📄 Reports</div>
-          <div class="s-7137c2f6">
-            <button class="btn btn-secondary btn-sm" data-report-type="summary" data-report-member="${escapeHtml(m.id)}">📋 Health Summary</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="vaccine" data-report-member="${escapeHtml(m.id)}">💉 Vaccine Record</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="medication" data-report-member="${escapeHtml(m.id)}">💊 Medication List</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="lab" data-report-member="${escapeHtml(m.id)}">🔬 Lab Results</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="bp" data-report-member="${escapeHtml(m.id)}">🩺 BP Log</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="growth" data-report-member="${escapeHtml(m.id)}">📏 Growth Chart</button>
-            <button class="btn btn-secondary btn-sm" data-report-type="annual" data-report-member="${escapeHtml(m.id)}">📅 Annual Report</button>
+          <div class="report-grid">
+            <button class="report-card" data-report-type="summary" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📋</span><span class="report-name">Health Summary</span></button>
+            <button class="report-card" data-report-type="vaccine" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💉</span><span class="report-name">Vaccine Record</span></button>
+            <button class="report-card" data-report-type="medication" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💊</span><span class="report-name">Medication List</span></button>
+            <button class="report-card" data-report-type="lab" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">🔬</span><span class="report-name">Lab Results</span></button>
+            <button class="report-card" data-report-type="bp" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">🩺</span><span class="report-name">BP Log</span></button>
+            <button class="report-card" data-report-type="growth" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📏</span><span class="report-name">Growth Chart</span></button>
+            <button class="report-card" data-report-type="annual" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📅</span><span class="report-name">Annual Report</span></button>
           </div>
         </div>
       `;
@@ -2038,6 +2057,7 @@
                 <div class="reminder-text">
                   <div class="reminder-title">${r.title}</div>
                   <div class="reminder-date">${r.date}</div>
+                  ${r.notes ? `<div class="reminder-notes" data-toggle-notes role="button" tabindex="0" title="Tap to expand">${r.notes}</div>` : ''}
                 </div>
                 <span class="tag ${r.status === 'overdue' ? 'tag-red' : r.status === 'upcoming' ? 'tag-yellow' : 'tag-green'}">${r.statusText}</span>
                 ${r.isCustom ? `
@@ -2459,7 +2479,8 @@
           id: cr.id,
           isCustom: true,
           title: escapeHtml(cr.title),
-          date: `Due ${cr.dueDate}${cr.repeatMonths ? ` &middot; repeats every ${cr.repeatMonths % 12 === 0 ? (cr.repeatMonths / 12) + 'y' : cr.repeatMonths + 'mo'}` : ''}${cr.notes ? ` &middot; ${escapeHtml(cr.notes)}` : ''}`,
+          date: `Due ${cr.dueDate}${cr.repeatMonths ? ` &middot; repeats every ${cr.repeatMonths % 12 === 0 ? (cr.repeatMonths / 12) + 'y' : cr.repeatMonths + 'mo'}` : ''}`,
+          notes: cr.notes ? escapeHtml(cr.notes) : '',
           status: daysDiff < 0 ? 'overdue' : daysDiff < 30 ? 'upcoming' : 'ok',
           statusText: daysDiff < 0 ? 'Overdue' : daysDiff < 30 ? 'Due Soon' : 'OK',
           icon: '🔔'
