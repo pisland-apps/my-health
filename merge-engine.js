@@ -239,6 +239,83 @@ function mergeMemberFields(winner, local, remote, conflicts, path) {
 // separately - design 1.7) ----------
 const RECORD_SCALAR_KEYS = ['date', 'type', 'title', 'details', 'tags', 'vitals'];
 const REMINDER_SCALAR_KEYS = ['title', 'dueDate', 'repeatMonths', 'notes'];
+// Daily Plan items. `order` (display position) and `archivedRecordId` are
+// deliberately NOT listed: two devices that only differ in those must never
+// raise a conflict (reordering is cosmetic; archiving is a one-shot helper).
+const PLAN_ITEM_SCALAR_KEYS = ['kind', 'name', 'dose', 'meal', 'schedule', 'time', 'icon', 'color', 'note', 'startDate', 'endDate'];
+
+// ---------- Daily Plan: intake log ----------
+// Last calendar day of the month that `dateStr` (YYYY-MM-DD) falls in.
+function monthEndStr(dateStr) {
+  const y = parseInt(String(dateStr).slice(0, 4), 10);
+  const m = parseInt(String(dateStr).slice(5, 7), 10);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return String(dateStr).slice(0, 8) + String(last).padStart(2, '0');
+}
+
+// A log entry is "compacted" once its WHOLE month lies before the cutoff
+// date. Used identically by the app's local compaction and by the merge, so
+// an old device re-importing old detail can never resurrect rows that were
+// already folded into a monthly summary.
+function isCompactedDate(dateStr, cutoff) {
+  return !!cutoff && typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && monthEndStr(dateStr) < cutoff;
+}
+
+// Intake entries never raise conflicts: two devices logging the same dose is
+// normal. Rules are symmetric (merge(a,b) === merge(b,a) in content):
+//   higher version wins; on a tie prefer a live entry over a tombstone, then
+//   'taken' over 'skipped', then the EARLIER takenAt, then the smaller JSON.
+function pickIntake(l, r) {
+  const lv = Number.isFinite(l.version) ? l.version : 1;
+  const rv = Number.isFinite(r.version) ? r.version : 1;
+  if (lv !== rv) return lv > rv ? l : r;
+  if (!!l.deletedAt !== !!r.deletedAt) return l.deletedAt ? r : l;
+  if (l.status !== r.status) return l.status === 'taken' ? l : r;
+  const lt = l.takenAt || '', rt = r.takenAt || '';
+  if (lt !== rt) { if (!lt) return r; if (!rt) return l; return lt < rt ? l : r; }
+  return JSON.stringify(l) <= JSON.stringify(r) ? l : r;
+}
+
+function mergeIntakeLog(localArr, remoteArr, cutoff) {
+  const byId = new Map();
+  [].concat(localArr || [], remoteArr || []).forEach(e => {
+    if (!e || typeof e.id !== 'string') return;
+    const prev = byId.get(e.id);
+    byId.set(e.id, prev ? pickIntake(prev, e) : e);
+  });
+  return Array.from(byId.values())
+    .filter(e => !isCompactedDate(e.date, cutoff))
+    .map(e => Object.assign({}, e));
+}
+
+// Monthly summaries are derived from an append-only log, so they only ever
+// grow: per-field max is order-independent and idempotent.
+function mergeIntakeSummaries(localArr, remoteArr) {
+  const byId = new Map();
+  const maxNum = (a, b) => (a == null ? b : (b == null ? a : Math.max(a, b)));
+  [].concat(localArr || [], remoteArr || []).forEach(s => {
+    if (!s || typeof s.id !== 'string') return;
+    const prev = byId.get(s.id);
+    if (!prev) { byId.set(s.id, Object.assign({}, s)); return; }
+    byId.set(s.id, Object.assign({}, prev, {
+      taken: maxNum(prev.taken, s.taken),
+      skipped: maxNum(prev.skipped, s.skipped),
+      expected: maxNum(prev.expected, s.expected)
+    }));
+  });
+  return Array.from(byId.values());
+}
+
+// Per-member plan settings (slot times/labels): one small object, picked
+// whole by Lamport version; a tie keeps local (no conflict entry - it is a
+// preference, not a record).
+function mergePlanSettings(local, remote) {
+  if (!local) return remote ? Object.assign({}, remote) : local;
+  if (!remote) return Object.assign({}, local);
+  const lv = Number.isFinite(local.version) ? local.version : 1;
+  const rv = Number.isFinite(remote.version) ? remote.version : 1;
+  return Object.assign({}, rv > lv ? remote : local);
+}
 
 // ---------- one member pair ----------
 //
@@ -255,7 +332,8 @@ const REMINDER_SCALAR_KEYS = ['title', 'dueDate', 'repeatMonths', 'notes'];
 //   2) mergeMemberFields ALWAYS runs, independently, using fieldVersion.
 // Nested children (records/customReminders/historyEntries) are merged
 // independently of both.
-function mergeMemberPair(local, remote, conflicts) {
+function mergeMemberPair(local, remote, conflicts, opts) {
+  opts = opts || {};
   const outcome = mergeEntityMeta(local, remote);
   const metaSource = outcome === 'remote' ? remote : local; // tie defaults to local, no conflict entry needed here - see note above
   const winner = {
@@ -281,6 +359,23 @@ function mergeMemberPair(local, remote, conflicts) {
   winner.historyEntries = mergeSyncArray(local.historyEntries, remote.historyEntries, {
     path: [local.id, 'historyEntries'], conflicts, ancestorTombstoned: tombstoned
   });
+  // Daily Plan (v62). Each key is only written when at least one side has it,
+  // so members that never used the feature stay byte-identical.
+  if (local.planItems || remote.planItems) {
+    winner.planItems = mergeSyncArray(local.planItems, remote.planItems, {
+      path: [local.id, 'planItems'], conflicts, ancestorTombstoned: tombstoned,
+      scalarKeys: PLAN_ITEM_SCALAR_KEYS
+    });
+  }
+  if (local.intakeLog || remote.intakeLog) {
+    winner.intakeLog = mergeIntakeLog(local.intakeLog, remote.intakeLog, opts.intakeCutoff);
+  }
+  if (local.intakeSummaries || remote.intakeSummaries) {
+    winner.intakeSummaries = mergeIntakeSummaries(local.intakeSummaries, remote.intakeSummaries);
+  }
+  if (local.planSettings || remote.planSettings) {
+    winner.planSettings = mergePlanSettings(local.planSettings, remote.planSettings);
+  }
   // history stays a plain string for now (design 1.10 - v1 UI still reads
   // m.history, historyEntries is a shadow not yet wired as source of
   // truth - see MERGE_SYNC_DESIGN.md 2.1). Until that wiring lands, keep
@@ -292,10 +387,12 @@ function mergeMemberPair(local, remote, conflicts) {
 }
 
 // ---------- top-level entry point ----------
-// mergeMembers(localMembers, remoteMembers) -> { members, conflicts }
+// mergeMembers(localMembers, remoteMembers, opts) -> { members, conflicts }
+// opts.intakeCutoff (YYYY-MM-DD, optional): Daily Plan intake entries whose
+// whole month lies before it are dropped (already folded into summaries).
 // Pure: no mutation of either input array or its objects (mergeSyncArray/
 // mergeMemberPair always copy before mutating a winner).
-function mergeMembers(localMembers, remoteMembers) {
+function mergeMembers(localMembers, remoteMembers, opts) {
   const conflicts = [];
   const localById = new Map((localMembers || []).map(x => [x.id, x]));
   const remoteById = new Map((remoteMembers || []).map(x => [x.id, x]));
@@ -308,7 +405,7 @@ function mergeMembers(localMembers, remoteMembers) {
     const r = remoteById.get(id);
     if (l && !r) return JSON.parse(JSON.stringify(l));
     if (r && !l) return JSON.parse(JSON.stringify(r));
-    return mergeMemberPair(l, r, conflicts);
+    return mergeMemberPair(l, r, conflicts, opts);
   });
 
   return { members, conflicts };
@@ -418,7 +515,8 @@ return {
   deepEqual,
   MEMBER_SCALAR_FIELDS,
   freshFieldVersions,
-  RECORD_SCALAR_KEYS, REMINDER_SCALAR_KEYS,
+  RECORD_SCALAR_KEYS, REMINDER_SCALAR_KEYS, PLAN_ITEM_SCALAR_KEYS,
+  mergeIntakeLog, mergeIntakeSummaries, mergePlanSettings, isCompactedDate, monthEndStr,
   cloneWithFreshIds, collectLiveAttachmentIds, collectAttachmentObjects, orphanedAttachmentIds
 };
 

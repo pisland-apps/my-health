@@ -524,6 +524,102 @@
     </div>
   </div>
 
+  <!-- Daily Plan: add/edit item -->
+  <div class="modal-overlay" id="planItemModal">
+    <div class="modal">
+      <div class="modal-header" id="planItemModalTitle">Add to Daily Plan</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="piName">Name</label>
+          <input class="form-input" id="piName" maxlength="80" placeholder="e.g. Vitamin D3">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="piKind">Type</label>
+          <select class="form-select" id="piKind">
+            <option value="supplement">Supplement</option>
+            <option value="medication">Medication</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="piDose">Dose</label>
+          <input class="form-input" id="piDose" maxlength="60" placeholder="e.g. 1000 IU, 2 capsules">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="piMeal">With food</label>
+          <select class="form-select" id="piMeal">
+            <option value="any">Any time</option>
+            <option value="before">Before meal</option>
+            <option value="with">With meal</option>
+            <option value="after">After meal</option>
+            <option value="empty">Empty stomach</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="piMode">Schedule</label>
+        <select class="form-select" id="piMode">
+          <option value="slots">At set times of day</option>
+          <option value="asNeeded">As needed (log each dose)</option>
+        </select>
+      </div>
+      <div id="piSlotsWrap">
+        <div class="form-group">
+          <label class="form-label">When</label>
+          <div class="plan-slot-list" id="piSlots"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="piTime">Exact time (optional, when only one time of day is picked)</label>
+          <input class="form-input" type="time" id="piTime">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Icon</label>
+        <div class="plan-picker" id="piIconPicker"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Color</label>
+        <div class="plan-picker" id="piColorPicker"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="piStart">Start date</label>
+          <input class="form-input" type="date" id="piStart">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="piEnd">End date (optional)</label>
+          <input class="form-input" type="date" id="piEnd">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="piNote">Note (optional)</label>
+        <input class="form-input" id="piNote" maxlength="200" placeholder="e.g. take with the biggest meal">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger s-hidden" id="btnDeletePlanItem">Delete</button>
+        <button class="btn btn-secondary" id="btnCancelPlanItem">Cancel</button>
+        <button class="btn btn-primary" id="btnSavePlanItem">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily Plan: time-slot names and times (per member) -->
+  <div class="modal-overlay" id="planSlotsModal">
+    <div class="modal">
+      <div class="modal-header">⏱ Time slots</div>
+      <p class="plan-sub">Set when each part of the day usually is for this person. Past history is not affected.</p>
+      <div class="plan-slot-edit"><input class="form-input" id="psLabel_morning" maxlength="20" aria-label="Morning name"><input class="form-input" type="time" id="psTime_morning" aria-label="Morning time"></div>
+      <div class="plan-slot-edit"><input class="form-input" id="psLabel_noon" maxlength="20" aria-label="Noon name"><input class="form-input" type="time" id="psTime_noon" aria-label="Noon time"></div>
+      <div class="plan-slot-edit"><input class="form-input" id="psLabel_evening" maxlength="20" aria-label="Evening name"><input class="form-input" type="time" id="psTime_evening" aria-label="Evening time"></div>
+      <div class="plan-slot-edit"><input class="form-input" id="psLabel_bedtime" maxlength="20" aria-label="Bedtime name"><input class="form-input" type="time" id="psTime_bedtime" aria-label="Bedtime time"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelPlanSlots">Cancel</button>
+        <button class="btn btn-primary" id="btnSavePlanSlots">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Conflict Review Modal (build order step 5) -->
   <div class="modal-overlay" id="conflictModal">
     <div class="modal s-conflict-modal">

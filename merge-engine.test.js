@@ -4,7 +4,8 @@
 
 const {
   mergeMembers, mergeSyncArray, mergeAttachmentArray, freshFieldVersions,
-  cloneWithFreshIds, collectLiveAttachmentIds, collectAttachmentObjects, orphanedAttachmentIds
+  cloneWithFreshIds, collectLiveAttachmentIds, collectAttachmentObjects, orphanedAttachmentIds,
+  mergeIntakeLog, mergeIntakeSummaries, isCompactedDate, monthEndStr
 } = require('./merge-engine.js');
 
 let pass = 0, fail = 0;
@@ -431,6 +432,132 @@ function att(id, extra) { return Object.assign({ id, name: id + '.jpg', type: 'i
   ok('insurance: differences never raise conflicts', res.conflicts.length === 0, JSON.stringify(res.conflicts));
   ok('insurance: nothing else on the member is lost',
     res.members[0].records.length === local[0].records.length && res.members[0].name === local[0].name);
+})();
+
+
+// ============================================================
+// 15. Daily Plan (v62): plan items, intake log, monthly summaries, settings
+// ============================================================
+(function testDailyPlan() {
+  function item(id, o) {
+    return Object.assign({ id, kind: 'supplement', name: 'Vitamin D', dose: '1000 IU', meal: 'after',
+      schedule: { mode: 'slots', slots: ['morning'] }, time: '', icon: '💊', color: 'teal', note: '',
+      order: 1, startDate: '2026-10-01', endDate: '', archivedRecordId: null }, freshMeta(), o || {});
+  }
+  function intake(itemId, date, slot, o) {
+    return Object.assign({ id: `${itemId}_${date}_${slot}`, itemId, date, slot, status: 'taken',
+      takenAt: `${date}T08:00:00.000Z` }, freshMeta(), o || {});
+  }
+  const byId = arr => arr.slice().sort((a, b) => (a.id < b.id ? -1 : 1));
+
+  // --- members without the feature are untouched
+  {
+    const l = [makeMember('m1')], r = clone(l);
+    const res = mergeMembers(clone(l), clone(r));
+    ok('plan: members without plan data gain no plan keys',
+      !('planItems' in res.members[0]) && !('intakeLog' in res.members[0]) && !('planSettings' in res.members[0]));
+  }
+
+  // --- plan items: union, version wins, tie conflict, order is cosmetic
+  {
+    const l = [makeMember('m1', { planItems: [item('pA'), item('pB', { name: 'Zinc' })] })];
+    const r = clone(l);
+    r[0].planItems.push(item('pC', { name: 'Omega-3' }));
+    r[0].planItems[0].name = 'Vitamin D3'; r[0].planItems[0].version = 2;
+    const res = mergeMembers(clone(l), clone(r));
+    const names = res.members[0].planItems.map(i => i.name).sort();
+    ok('plan: union of items + higher version wins', JSON.stringify(names) === JSON.stringify(['Omega-3', 'Vitamin D3', 'Zinc']), JSON.stringify(names));
+    ok('plan: no conflicts for clean one-sided edits', res.conflicts.length === 0);
+  }
+  {
+    const l = [makeMember('m1', { planItems: [item('pA')] })];
+    const r = clone(l);
+    r[0].planItems[0].order = 7;                 // cosmetic only
+    ok('plan: order-only difference is not a conflict', mergeMembers(clone(l), clone(r)).conflicts.length === 0);
+    r[0].planItems[0].dose = '2000 IU';          // same version, different content
+    const res = mergeMembers(clone(l), clone(r));
+    ok('plan: same-version content difference IS a conflict', res.conflicts.length === 1 && res.conflicts[0].path[1] === 'planItems');
+    ok('plan: conflict keeps local content', res.members[0].planItems[0].dose === '1000 IU');
+  }
+
+  // --- intake log: same dose logged on both devices => ONE entry, no conflict, symmetric
+  {
+    const a = [intake('pA', '2026-10-14', 'morning', { takenAt: '2026-10-14T00:12:00.000Z' })];
+    const b = [intake('pA', '2026-10-14', 'morning', { takenAt: '2026-10-14T00:05:00.000Z' })];
+    const lm = [makeMember('m1', { intakeLog: a })], rm = [makeMember('m1', { intakeLog: b })];
+    rm[0].id = lm[0].id;
+    const r1 = mergeMembers(clone(lm), clone(rm)), r2 = mergeMembers(clone(rm), clone(lm));
+    ok('intake: double-logged dose merges to one entry', r1.members[0].intakeLog.length === 1);
+    ok('intake: no conflict for double-logged dose', r1.conflicts.length === 0 && r2.conflicts.length === 0);
+    ok('intake: merge is symmetric', JSON.stringify(byId(r1.members[0].intakeLog)) === JSON.stringify(byId(r2.members[0].intakeLog)));
+    ok('intake: tie keeps the earlier takenAt', r1.members[0].intakeLog[0].takenAt === '2026-10-14T00:05:00.000Z');
+  }
+  // taken vs skipped on a tie: taken wins, both directions
+  {
+    const t = intake('pA', '2026-10-14', 'evening'), k = intake('pA', '2026-10-14', 'evening', { status: 'skipped', takenAt: null });
+    const x = mergeIntakeLog([t], [k]), y = mergeIntakeLog([k], [t]);
+    ok('intake: taken beats skipped on a version tie (both orders)', x[0].status === 'taken' && y[0].status === 'taken');
+  }
+  // undo (tombstone, higher version) beats an older "taken"; a re-take beats the undo
+  {
+    const taken = intake('pA', '2026-10-14', 'morning');
+    const undone = Object.assign({}, taken, { deletedAt: '2026-10-14T01:00:00.000Z', version: 2 });
+    const retaken = Object.assign({}, taken, { deletedAt: null, version: 3 });
+    ok('intake: undo (v2) beats taken (v1)', mergeIntakeLog([taken], [undone])[0].deletedAt !== null);
+    ok('intake: re-take (v3) beats undo (v2)', mergeIntakeLog([undone], [retaken])[0].deletedAt === null);
+  }
+  // as-needed entries (random ids) from two devices are both kept
+  {
+    const a = [Object.assign({ id: 'in1', itemId: 'pX', date: '2026-10-14', slot: null, status: 'taken', takenAt: '2026-10-14T02:00:00.000Z' }, freshMeta())];
+    const b = [Object.assign({ id: 'in2', itemId: 'pX', date: '2026-10-14', slot: null, status: 'taken', takenAt: '2026-10-14T08:00:00.000Z' }, freshMeta())];
+    ok('intake: as-needed doses from two devices are both kept', mergeIntakeLog(a, b).length === 2);
+  }
+
+  // --- cutoff: whole-month rule
+  ok('cutoff: monthEndStr', monthEndStr('2026-02-10') === '2026-02-28' && monthEndStr('2028-02-10') === '2028-02-29' && monthEndStr('2026-12-01') === '2026-12-31');
+  ok('cutoff: month fully before cutoff is compacted', isCompactedDate('2026-07-15', '2026-08-01') === true);
+  ok('cutoff: month straddling the cutoff is kept', isCompactedDate('2026-07-15', '2026-07-31') === false);
+  ok('cutoff: no cutoff => nothing compacted', isCompactedDate('2020-01-01', undefined) === false);
+  {
+    const old = intake('pA', '2026-06-10', 'morning'), edge = intake('pA', '2026-07-05', 'morning'), cur = intake('pA', '2026-10-14', 'morning');
+    const out = mergeIntakeLog([old, edge], [cur], '2026-07-20');
+    const ids = out.map(e => e.date).sort();
+    ok('cutoff: old detail cannot be resurrected by a merge', JSON.stringify(ids) === JSON.stringify(['2026-07-05', '2026-10-14']), JSON.stringify(ids));
+  }
+
+  // --- summaries: grow-only max, idempotent, symmetric
+  {
+    const a = [{ id: 'pA_2026-06', itemId: 'pA', month: '2026-06', taken: 20, skipped: 1, expected: 30 }];
+    const b = [{ id: 'pA_2026-06', itemId: 'pA', month: '2026-06', taken: 25, skipped: 0, expected: 30 },
+               { id: 'pA_2026-05', itemId: 'pA', month: '2026-05', taken: 10, skipped: 0, expected: null }];
+    const x = mergeIntakeSummaries(a, b), y = mergeIntakeSummaries(b, a), z = mergeIntakeSummaries(x, b);
+    const jun = x.find(s => s.month === '2026-06');
+    ok('summaries: per-field max', jun.taken === 25 && jun.skipped === 1 && jun.expected === 30);
+    ok('summaries: symmetric', JSON.stringify(byId(x)) === JSON.stringify(byId(y)));
+    ok('summaries: idempotent (re-merging changes nothing)', JSON.stringify(byId(x)) === JSON.stringify(byId(z)));
+    ok('summaries: union of months', x.length === 2);
+  }
+
+  // --- plan settings: higher version wins; tie keeps local, never a conflict
+  {
+    const l = [makeMember('m1', { planSettings: { version: 1, slotTimes: { morning: '07:00' } } })];
+    const r = [makeMember('m1', { planSettings: { version: 2, slotTimes: { morning: '09:00' } } })];
+    const res = mergeMembers(clone(l), clone(r));
+    ok('settings: higher version wins', res.members[0].planSettings.slotTimes.morning === '09:00');
+    r[0].planSettings.version = 1;
+    const tie = mergeMembers(clone(l), clone(r));
+    ok('settings: tie keeps local, no conflict', tie.members[0].planSettings.slotTimes.morning === '07:00' && tie.conflicts.length === 0);
+  }
+
+  // --- full-member cutoff wiring through mergeMembers opts
+  {
+    const lm = [makeMember('m1', { intakeLog: [intake('pA', '2026-03-01', 'morning')] })];
+    const rm = [makeMember('m1', { intakeLog: [intake('pA', '2026-10-14', 'morning')] })];
+    const res = mergeMembers(clone(lm), clone(rm), { intakeCutoff: '2026-07-16' });
+    ok('mergeMembers: opts.intakeCutoff is honoured', res.members[0].intakeLog.length === 1 && res.members[0].intakeLog[0].date === '2026-10-14');
+    const noCut = mergeMembers(clone(lm), clone(rm));
+    ok('mergeMembers: without opts nothing is pruned', noCut.members[0].intakeLog.length === 2);
+  }
 })();
 
 console.log(`\n${pass} passed, ${fail} failed.`);

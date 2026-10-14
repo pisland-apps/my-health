@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v61';
+    const APP_VERSION = 'v62';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -428,6 +428,8 @@
         stampArray(m.records);
         (m.records || []).forEach(r => stampArray(r.attachments, { attachmentsOnly: true }));
         stampArray(m.customReminders);
+        stampArray(m.planItems);
+        stampArray(m.intakeLog);
         if (m.bloodTypeAttachment && typeof m.bloodTypeAttachment === 'object' && !('deletedAt' in m.bloodTypeAttachment)) {
           m.bloodTypeAttachment.deletedAt = null;
         }
@@ -1506,6 +1508,7 @@
         saveData();
       }
 
+      compactPlanLogs(members);
       membersLoaded = true;
       bindEvents();
       renderMemberList();
@@ -1604,7 +1607,7 @@
       bloodTypeAttachment: 'Blood type document'
     };
     const CONFLICT_CONTAINER_LABELS = {
-      records: 'Health record', customReminders: 'Reminder', historyEntries: 'Medical history note'
+      records: 'Health record', customReminders: 'Reminder', historyEntries: 'Medical history note', planItems: 'Daily Plan item'
     };
     // A short one-line summary per entity type, for the two "before/after"
     // columns - design 2.7 explicitly wants no inline diffing, just enough
@@ -1616,6 +1619,7 @@
         case 'records': return escapeHtml(`${obj.title || obj.type || 'Record'} · ${obj.date || ''}`);
         case 'customReminders': return escapeHtml(`${obj.title || 'Reminder'} · due ${obj.dueDate || ''}`);
         case 'historyEntries': return escapeHtml(obj.text || '');
+        case 'planItems': return escapeHtml(`${obj.name || 'Item'}${obj.dose ? ' · ' + obj.dose : ''}`);
         default: return escapeHtml(JSON.stringify(obj).slice(0, 120));
       }
     }
@@ -1745,6 +1749,13 @@
       document.getElementById('btnPrintReport').addEventListener('click', printReportFromPreview);
       document.getElementById('btnCancelReminder').addEventListener('click', closeReminderModal);
       document.getElementById('btnSaveReminder').addEventListener('click', saveCustomReminder);
+      document.getElementById('btnCancelPlanItem').addEventListener('click', closePlanItemModal);
+      document.getElementById('btnSavePlanItem').addEventListener('click', savePlanItem);
+      document.getElementById('btnDeletePlanItem').addEventListener('click', deletePlanItem);
+      document.getElementById('piMode').addEventListener('change', updatePlanModeUi);
+      document.getElementById('piSlots').addEventListener('change', updatePlanModeUi);
+      document.getElementById('btnCancelPlanSlots').addEventListener('click', closePlanSlotsModal);
+      document.getElementById('btnSavePlanSlots').addEventListener('click', savePlanSlots);
 
       // Record type change
       document.getElementById('rType').addEventListener('change', toggleVitals);
@@ -1906,11 +1917,13 @@
             <button class="tab ${currentTab === 'overview' ? 'active' : ''}" data-tab="overview">📊 Overview</button>
             <button class="tab ${currentTab === 'records' ? 'active' : ''}" data-tab="records">📋 Records</button>
             <button class="tab ${currentTab === 'charts' ? 'active' : ''}" data-tab="charts">📈 Trends</button>
+            <button class="tab ${currentTab === 'plan' ? 'active' : ''}" data-tab="plan">💊 Plan</button>
             <button class="tab ${currentTab === 'reminders' ? 'active' : ''}" data-tab="reminders">⏰ Reminders</button>
           </div>
           ${currentTab === 'overview' ? renderOverview(m, latestVitals, bmi, reminders) : ''}
           ${currentTab === 'records' ? renderRecords(m) : ''}
           ${currentTab === 'charts' ? renderCharts(bpRecords, m, chartHtml) : ''}
+          ${currentTab === 'plan' ? renderPlanTab(m) : ''}
           ${currentTab === 'reminders' ? renderReminders(reminders, m.id) : ''}
       `;
 
@@ -2014,6 +2027,8 @@
             <div class="s-828bc405">${escapeHtml(m.history) || 'No records'}</div>
           </div>
         </div>
+
+        ${renderPlanToday(m)}
 
         <div class="card">
           <div class="card-title">📊 Latest Vitals</div>
@@ -2744,6 +2759,647 @@
       renderMain();
     }
 
+    // ========== DAILY PLAN (v62) ==========
+    // What to take (the PLAN: m.planItems) is kept apart from what was
+    // actually taken (the LOG: m.intakeLog), because "taken" is a per-day fact.
+    //   plan item : { id, kind, name, dose, meal, schedule:{mode,slots}, time, icon, color,
+    //                 note, order, startDate, endDate, archivedRecordId, ...sync meta }
+    //   log entry : slot doses  -> id `${itemId}_${date}_${slot}` (deterministic, so two devices
+    //                              logging the same dose merge into ONE entry)
+    //               as-needed   -> id freshId('in') (never changes, even when takenAt is edited)
+    //   summaries : m.intakeSummaries - one row per item per month once the detail is older than
+    //                PLAN_KEEP_DAYS (whole months only, see merge-engine.js isCompactedDate)
+    //   settings  : m.planSettings - per-member slot times + labels
+    // Ids use "_" rather than "|" because sanitizeId() only accepts [A-Za-z0-9_-].
+    // Plan items / log entries are never rendered from raw ids without escapeHtml, and all
+    // enums (kind, meal, icon, color, slots) are validated on import - see normalizePlanItems().
+    const PLAN_SLOT_IDS = ['morning', 'noon', 'evening', 'bedtime'];
+    const PLAN_SLOT_DEFAULTS = {
+      morning: { label: 'Morning', time: '08:00' }, noon: { label: 'Noon', time: '12:00' },
+      evening: { label: 'Evening', time: '18:00' }, bedtime: { label: 'Bedtime', time: '22:00' }
+    };
+    const PLAN_MEALS = { any: '', before: 'before meal', with: 'with meal', after: 'after meal', empty: 'empty stomach' };
+    const PLAN_ICONS = ['💊', '💉', '🧴', '🌿', '🍊', '🐟', '🥛', '🧪', '🩹', '🫀', '🦴', '👁️'];
+    const PLAN_COLORS = ['teal', 'blue', 'purple', 'pink', 'red', 'orange', 'yellow', 'green'];
+    const PLAN_KEEP_DAYS = 90;
+    const PLAN_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const PLAN_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+    let editingPlanItemId = null;
+    let planDraft = { icon: PLAN_ICONS[0], color: PLAN_COLORS[0] };
+
+    // ---- local-calendar date helpers (the existing code mostly uses UTC dates; a dose taken at
+    // 07:00 in UTC+8 must still count as "today", so the plan always uses the local calendar) ----
+    function pad2(n) { return String(n).padStart(2, '0'); }
+    function localDateStr(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+    function localTimeStr(d) { d = d || new Date(); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+    function addDaysStr(dateStr, n) { const [y, m, d] = dateStr.split('-').map(Number); return localDateStr(new Date(y, m - 1, d + n)); }
+    function daysBetween(fromStr, toStr) {
+      const a = fromStr.split('-').map(Number), b = toStr.split('-').map(Number);
+      return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000);
+    }
+    function localDateTimeToIso(dateStr, timeStr) {
+      const [y, m, d] = dateStr.split('-').map(Number), [hh, mm] = timeStr.split(':').map(Number);
+      return new Date(y, m - 1, d, hh, mm).toISOString();
+    }
+    function isoToLocalTime(iso) { const d = new Date(iso); return (!iso || isNaN(d)) ? '' : localTimeStr(d); }
+    function intakeCutoffDate() { return addDaysStr(localDateStr(), -PLAN_KEEP_DAYS); }
+    function makeIntakeId(itemId, date, slot) { return itemId + '_' + date + '_' + slot; }
+    function fmtAgo(iso) {
+      const ms = Date.now() - new Date(iso).getTime();
+      if (!Number.isFinite(ms) || ms < 0) return '';
+      const min = Math.floor(ms / 60000);
+      if (min < 1) return 'just now';
+      if (min < 60) return min + ' min ago';
+      const h = Math.floor(min / 60);
+      return h < 48 ? h + ' h ago' : Math.floor(h / 24) + ' d ago';
+    }
+
+    // ---- reading the plan ----
+    function getCurMember() { return members.find(x => x.id === currentMemberId); }
+    function getPlanSettings(m) {
+      const s = (m && m.planSettings) || {};
+      const out = { slotTimes: {}, slotLabels: {} };
+      PLAN_SLOT_IDS.forEach(id => {
+        const t = s.slotTimes && s.slotTimes[id];
+        out.slotTimes[id] = PLAN_TIME_RE.test(t || '') ? t : PLAN_SLOT_DEFAULTS[id].time;
+        const l = (s.slotLabels && typeof s.slotLabels[id] === 'string') ? s.slotLabels[id].trim().slice(0, 20) : '';
+        out.slotLabels[id] = l || PLAN_SLOT_DEFAULTS[id].label;
+      });
+      return out;
+    }
+    function planItemIsAsNeeded(it) { return !!(it.schedule && it.schedule.mode === 'asNeeded'); }
+    function planItemSlots(it) {
+      const sc = it.schedule || {};
+      return sc.mode === 'slots' && Array.isArray(sc.slots) ? PLAN_SLOT_IDS.filter(s => sc.slots.includes(s)) : [];
+    }
+    function planItemActiveOn(it, dateStr) {
+      return !it.deletedAt && (!it.startDate || it.startDate <= dateStr) && (!it.endDate || it.endDate >= dateStr);
+    }
+    function sortedPlanItems(m) {
+      return live(m.planItems).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
+    }
+    function planDueTime(m, it, slot) {
+      return (it.time && planItemSlots(it).length === 1 && PLAN_TIME_RE.test(it.time)) ? it.time : getPlanSettings(m).slotTimes[slot];
+    }
+    function planWhenText(m, it) {
+      if (planItemIsAsNeeded(it)) return 'As needed';
+      const slots = planItemSlots(it);
+      if (!slots.length) return 'No time set';
+      const st = getPlanSettings(m);
+      return slots.map(s => st.slotLabels[s]).join(', ') + (it.time && slots.length === 1 ? ' · ' + it.time : '');
+    }
+    function planSubText(it) { return [it.dose, PLAN_MEALS[it.meal]].filter(Boolean).join(' · '); }
+    function findLiveIntake(m, id) { const e = (m.intakeLog || []).find(x => x.id === id); return e && !e.deletedAt ? e : null; }
+    function lastTakenIso(m, itemId) {
+      let best = '';
+      (m.intakeLog || []).forEach(e => { if (!e.deletedAt && e.itemId === itemId && e.status === 'taken' && e.takenAt && e.takenAt > best) best = e.takenAt; });
+      return best;
+    }
+
+    function buildDayPlan(m, dateStr) {
+      const items = sortedPlanItems(m).filter(it => planItemActiveOn(it, dateStr));
+      const groups = [];
+      const st = getPlanSettings(m);
+      PLAN_SLOT_IDS.forEach(slot => {
+        const rows = items.filter(it => planItemSlots(it).includes(slot)).map(it => ({
+          item: it, slot, entry: findLiveIntake(m, makeIntakeId(it.id, dateStr, slot)), due: planDueTime(m, it, slot)
+        }));
+        if (rows.length) groups.push({ slot, label: st.slotLabels[slot], time: st.slotTimes[slot], rows });
+      });
+      const asNeeded = items.filter(planItemIsAsNeeded).map(it => ({
+        item: it,
+        doses: (m.intakeLog || []).filter(e => !e.deletedAt && e.itemId === it.id && e.date === dateStr && !e.slot && e.status === 'taken')
+                 .sort((a, b) => String(a.takenAt).localeCompare(String(b.takenAt))),
+        last: lastTakenIso(m, it.id)
+      }));
+      return { groups, asNeeded };
+    }
+
+    // taken / expected over the last `days` COMPLETED days (today excluded - its slots are still pending)
+    function planAdherence(m, it, days) {
+      if (planItemIsAsNeeded(it)) return null;
+      const slots = planItemSlots(it).length;
+      let expected = 0, taken = 0;
+      const today = localDateStr();
+      for (let i = 1; i <= days; i++) {
+        const d = addDaysStr(today, -i);
+        if (!planItemActiveOn(it, d)) continue;
+        expected += slots;
+        planItemSlots(it).forEach(s => { const e = findLiveIntake(m, makeIntakeId(it.id, d, s)); if (e && e.status === 'taken') taken++; });
+      }
+      return expected ? { taken, expected } : null;
+    }
+
+    // ---- rendering ----
+    function renderPlanRow(row, today, nowT) {
+      const it = row.item, e = row.entry;
+      const state = e ? e.status : 'pending';
+      const attrs = `data-item="${escapeHtml(it.id)}" data-slot="${row.slot}" data-date="${today}"`;
+      let right;
+      if (state === 'taken') {
+        right = `<input type="time" class="plan-time-input" data-plan-takentime ${attrs} value="${escapeHtml(isoToLocalTime(e.takenAt))}" aria-label="Time taken">`;
+      } else if (state === 'skipped') {
+        right = '<span class="tag">Skipped</span>';
+      } else {
+        right = (nowT >= row.due ? `<span class="tag tag-yellow">Due ${row.due}</span>` : `<span class="plan-due">${row.due}</span>`)
+          + `<button type="button" class="plan-skip" data-plan-skip ${attrs}>Skip</button>`;
+      }
+      const label = state === 'pending' ? 'Mark ' + it.name + ' as taken' : 'Undo ' + it.name;
+      return `
+        <div class="plan-row plan-c-${it.color} plan-${state}">
+          <button type="button" class="plan-check${state === 'taken' ? ' on' : ''}" data-plan-toggle ${attrs} aria-label="${escapeHtml(label)}" aria-pressed="${state !== 'pending'}">${state === 'taken' ? '✓' : state === 'skipped' ? '–' : ''}</button>
+          <span class="plan-ico">${escapeHtml(it.icon)}</span>
+          <div class="plan-main">
+            <div class="plan-name">${escapeHtml(it.name)}</div>
+            <div class="plan-sub">${escapeHtml(planSubText(it))}${it.note ? ` <span class="plan-note">${escapeHtml(it.note)}</span>` : ''}</div>
+          </div>
+          <div class="plan-right">${right}</div>
+        </div>`;
+    }
+
+    function renderPlanToday(m) {
+      const today = localDateStr(), nowT = localTimeStr();
+      if (!live(m.planItems).length) {
+        return `
+        <div class="card">
+          <div class="card-title">💊 Today</div>
+          <p class="s-9155c939">No daily plan yet - add the supplements and medicines to take each day.</p>
+          <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add to Daily Plan</button>
+        </div>`;
+      }
+      const plan = buildDayPlan(m, today);
+      let total = 0, taken = 0, skipped = 0;
+      plan.groups.forEach(g => g.rows.forEach(r => { total++; if (r.entry) { if (r.entry.status === 'taken') taken++; else skipped++; } }));
+      const progress = total ? `${taken} / ${total} taken${skipped ? ` · ${skipped} skipped` : ''}` : '';
+      const groupsHtml = plan.groups.map(g => `
+        <div class="plan-group-title">${escapeHtml(g.label)} <span class="plan-group-time">${g.time}</span></div>
+        ${g.rows.map(r => renderPlanRow(r, today, nowT)).join('')}`).join('');
+      const asNeededHtml = plan.asNeeded.length ? `
+        <div class="plan-group-title">As needed</div>
+        ${plan.asNeeded.map(a => `
+          <div class="plan-row plan-c-${a.item.color}">
+            <span class="plan-ico">${escapeHtml(a.item.icon)}</span>
+            <div class="plan-main">
+              <div class="plan-name">${escapeHtml(a.item.name)}</div>
+              <div class="plan-sub">${escapeHtml(planSubText(a.item))}${a.last ? ` <span class="plan-note">Last: ${escapeHtml(fmtAgo(a.last))}</span>` : ''}</div>
+              ${a.doses.length ? `<div class="plan-doses">${a.doses.map(d => `
+                <span class="plan-dose"><input type="time" class="plan-time-input" data-plan-takentime data-entry-id="${escapeHtml(d.id)}" value="${escapeHtml(isoToLocalTime(d.takenAt))}" aria-label="Time taken"><button type="button" class="plan-dose-x" data-plan-undo data-entry-id="${escapeHtml(d.id)}" aria-label="Remove this dose">×</button></span>`).join('')}</div>` : ''}
+            </div>
+            <div class="plan-right"><button type="button" class="btn btn-secondary btn-sm" data-plan-asneeded data-item="${escapeHtml(a.item.id)}">+ Log dose</button></div>
+          </div>`).join('')}` : '';
+      return `
+        <div class="card">
+          <div class="card-title plan-title">💊 Today <span class="plan-progress">${progress}</span>
+            <span class="plan-manage">
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-open-tab>Manage plan</button>
+            </span></div>
+          ${groupsHtml || asNeededHtml ? groupsHtml + asNeededHtml : '<p class="s-9155c939">Nothing scheduled for today.</p>'}
+        </div>`;
+    }
+
+    function monthLabel(ym) {
+      const [y, mo] = ym.split('-').map(Number);
+      return new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+    }
+
+    function renderPlanTab(m) {
+      const today = localDateStr();
+      const all = sortedPlanItems(m);
+      const active = all.filter(it => !it.endDate || it.endDate >= today);
+      const ended = all.filter(it => it.endDate && it.endDate < today);
+      const itemRow = (it, idx, n) => {
+        const adh = planAdherence(m, it, 7);
+        const upcoming = it.startDate && it.startDate > today;
+        return `
+        <div class="plan-row plan-c-${it.color}">
+          <span class="plan-ico">${escapeHtml(it.icon)}</span>
+          <div class="plan-main">
+            <div class="plan-name">${escapeHtml(it.name)} <span class="tag">${it.kind === 'medication' ? 'Medication' : 'Supplement'}</span>${upcoming ? ` <span class="tag tag-yellow">Starts ${escapeHtml(it.startDate)}</span>` : ''}</div>
+            <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}${escapeHtml(planWhenText(m, it))}${adh ? ` · ${adh.taken}/${adh.expected} last 7 days` : ''}</div>
+            ${it.note ? `<div class="plan-sub">${escapeHtml(it.note)}</div>` : ''}
+          </div>
+          <div class="plan-actions">
+            <button type="button" class="plan-icon-btn" data-plan-up="${escapeHtml(it.id)}" aria-label="Move up"${idx === 0 ? ' disabled' : ''}>↑</button>
+            <button type="button" class="plan-icon-btn" data-plan-down="${escapeHtml(it.id)}" aria-label="Move down"${idx === n - 1 ? ' disabled' : ''}>↓</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-plan-edit="${escapeHtml(it.id)}">Edit</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-plan-stop="${escapeHtml(it.id)}">Stop</button>
+          </div>
+        </div>`;
+      };
+      const endedRow = it => `
+        <div class="plan-row plan-c-${it.color} plan-ended">
+          <span class="plan-ico">${escapeHtml(it.icon)}</span>
+          <div class="plan-main">
+            <div class="plan-name">${escapeHtml(it.name)} <span class="tag">Ended ${escapeHtml(it.endDate)}</span>${it.archivedRecordId ? ' <span class="tag tag-green">In records</span>' : ''}</div>
+            <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}${escapeHtml(planWhenText(m, it))}</div>
+          </div>
+          <div class="plan-actions">
+            <button type="button" class="btn btn-secondary btn-sm" data-plan-edit="${escapeHtml(it.id)}">Edit</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-plan-resume="${escapeHtml(it.id)}">Resume</button>
+            ${it.archivedRecordId ? '' : `<button type="button" class="btn btn-secondary btn-sm" data-plan-archive="${escapeHtml(it.id)}">Save to records</button>`}
+          </div>
+        </div>`;
+      const summaries = (m.intakeSummaries || []).slice().sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0));
+      const nameOf = id => { const it = (m.planItems || []).find(x => x.id === id); return it ? it.name : 'Removed item'; };
+      return `
+        <div class="card">
+          <div class="card-title plan-title">💊 Daily Plan
+            <span class="plan-manage">
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-settings>⏱ Time slots</button>
+              <button type="button" class="btn btn-primary btn-sm" data-plan-add>+ Add</button>
+            </span></div>
+          ${active.length ? active.map((it, i) => itemRow(it, i, active.length)).join('') : '<p class="s-9155c939">Nothing in the plan yet.</p>'}
+        </div>
+        ${ended.length ? `<div class="card"><div class="card-title">Ended</div>${ended.map(endedRow).join('')}</div>` : ''}
+        ${summaries.length ? `
+        <div class="card">
+          <details class="plan-earlier">
+            <summary>Earlier months (${summaries.length})</summary>
+            ${summaries.map(s => `<div class="plan-sub">${escapeHtml(monthLabel(s.month))} · ${escapeHtml(nameOf(s.itemId))}: ${s.taken}${s.expected != null ? ' / ' + s.expected : ''} taken${s.skipped ? `, ${s.skipped} skipped` : ''}</div>`).join('')}
+          </details>
+          <p class="plan-sub">Detailed logs are kept for ${PLAN_KEEP_DAYS} days, then folded into these monthly totals.</p>
+        </div>` : ''}`;
+    }
+
+    // ---- writing: one helper so every action saves + rolls back the same way ----
+    function planCommit(m, mutate, opts) {
+      opts = opts || {};
+      const snap = {
+        planItems: JSON.stringify(m.planItems || []), intakeLog: JSON.stringify(m.intakeLog || []),
+        intakeSummaries: JSON.stringify(m.intakeSummaries || []), planSettings: JSON.stringify(m.planSettings || null),
+        records: opts.records ? m.records.slice() : null
+      };
+      mutate();
+      compactMemberIntakeLog(m, intakeCutoffDate());
+      if (!saveData()) {
+        m.planItems = JSON.parse(snap.planItems); m.intakeLog = JSON.parse(snap.intakeLog);
+        m.intakeSummaries = JSON.parse(snap.intakeSummaries);
+        const ps = JSON.parse(snap.planSettings); if (ps) m.planSettings = ps; else delete m.planSettings;
+        if (snap.records) m.records = snap.records;
+        return false;
+      }
+      return true;
+    }
+    function planRerender() {
+      const main = document.getElementById('mainContent');
+      const st = main ? main.scrollTop : 0;
+      renderMain();
+      if (main) main.scrollTop = st;
+    }
+
+    function togglePlanDose(itemId, slot, date, wantSkip) {
+      const m = getCurMember();
+      if (!m || !PLAN_SLOT_IDS.includes(slot) || !PLAN_DATE_RE.test(date)) return;
+      const id = makeIntakeId(itemId, date, slot);
+      const ok = planCommit(m, () => {
+        if (!m.intakeLog) m.intakeLog = [];
+        const e = m.intakeLog.find(x => x.id === id);
+        const nowIso_ = new Date().toISOString();
+        if (e && !e.deletedAt) {            // tapping a taken/skipped row undoes it
+          tombstone(e);
+        } else if (e) {                      // previously undone: bring the same entry back
+          e.deletedAt = null; e.status = wantSkip ? 'skipped' : 'taken'; e.takenAt = wantSkip ? null : nowIso_; bumpVersion(e);
+        } else {
+          m.intakeLog.push(Object.assign({ id, itemId, date, slot, status: wantSkip ? 'skipped' : 'taken', takenAt: wantSkip ? null : nowIso_ }, freshSyncMeta()));
+        }
+      });
+      if (ok) planRerender();
+    }
+
+    function logAsNeededDose(itemId) {
+      const m = getCurMember();
+      if (!m) return;
+      const ok = planCommit(m, () => {
+        if (!m.intakeLog) m.intakeLog = [];
+        m.intakeLog.push(Object.assign({ id: freshId('in'), itemId, date: localDateStr(), slot: null, status: 'taken', takenAt: new Date().toISOString() }, freshSyncMeta()));
+      });
+      if (ok) planRerender();
+    }
+
+    function undoIntakeEntry(entryId) {
+      const m = getCurMember();
+      const e = m && (m.intakeLog || []).find(x => x.id === entryId);
+      if (!e) return;
+      if (planCommit(m, () => { tombstone(e); })) planRerender();
+    }
+
+    function editIntakeTime(el) {
+      const m = getCurMember();
+      if (!m || !PLAN_TIME_RE.test(el.value || '')) return;
+      const e = el.dataset.entryId ? (m.intakeLog || []).find(x => x.id === el.dataset.entryId)
+                                   : (m.intakeLog || []).find(x => x.id === makeIntakeId(el.dataset.item, el.dataset.date, el.dataset.slot));
+      if (!e || e.deletedAt) return;
+      if (planCommit(m, () => { e.takenAt = localDateTimeToIso(e.date, el.value); bumpVersion(e); })) planRerender();
+    }
+
+    function movePlanItem(id, dir) {
+      const m = getCurMember();
+      if (!m) return;
+      const today = localDateStr();
+      const all = sortedPlanItems(m);
+      const act = all.filter(it => !it.endDate || it.endDate >= today);
+      const i = act.findIndex(it => it.id === id), j = i + dir;
+      if (i < 0 || j < 0 || j >= act.length) return;
+      const ok = planCommit(m, () => {
+        all.forEach((it, k) => { if (it.order !== k + 1) { it.order = k + 1; bumpVersion(it); } }); // make orders unique first
+        const a = act[i], b = act[j];
+        const t = a.order; a.order = b.order; b.order = t;
+        bumpVersion(a); bumpVersion(b);
+      });
+      if (ok) planRerender();
+    }
+
+    // ---- Medication-record bridge: plan = "now", records = "history" ----
+    function archivePlanItemAsRecord(m, it) {
+      if (it.archivedRecordId && live(m.records).some(r => r.id === it.archivedRecordId)) return false;
+      // an item stopped before its first dose has endDate < startDate: show just the start
+      const range = it.startDate ? ` · ${it.startDate}${(it.endDate && it.endDate >= it.startDate) ? ' → ' + it.endDate : ''}` : '';
+      const rec = Object.assign({
+        id: freshId('r'), date: it.startDate || localDateStr(), type: 'Medication', title: it.name,
+        details: [planSubText(it), planWhenText(m, it)].filter(Boolean).join(', ') + range,
+        tags: ['daily-plan'], vitals: {}, attachments: []
+      }, freshSyncMeta());
+      m.records.push(rec);
+      it.archivedRecordId = rec.id;
+      bumpVersion(it);
+      return true;
+    }
+
+    function stopPlanItem(id) {
+      const m = getCurMember();
+      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
+      if (!it) return;
+      if (!confirm(`Stop "${it.name}"?\n\nIt moves to Ended and stops appearing in Today. Your history is kept.`)) return;
+      const today = localDateStr();
+      const tookToday = (m.intakeLog || []).some(e => !e.deletedAt && e.itemId === id && e.date === today && e.status === 'taken');
+      const wantRecord = !it.archivedRecordId && confirm(`Also save "${it.name}" as a Medication record in this member's health records?\n\n(Dose, schedule and dates - it will show in the Medication List report.)`);
+      const ok = planCommit(m, () => {
+        it.endDate = tookToday ? today : addDaysStr(today, -1);
+        bumpVersion(it);
+        if (wantRecord) archivePlanItemAsRecord(m, it);
+      }, { records: true });
+      if (ok) planRerender();
+    }
+
+    function resumePlanItem(id) {
+      const m = getCurMember();
+      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
+      if (!it) return;
+      if (planCommit(m, () => { it.endDate = ''; bumpVersion(it); })) planRerender();
+    }
+
+    function archivePlanItemClick(id) {
+      const m = getCurMember();
+      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
+      if (!it) return;
+      if (planCommit(m, () => { archivePlanItemAsRecord(m, it); }, { records: true })) planRerender();
+    }
+
+    // ---- add / edit modal ----
+    function renderPlanPickers() {
+      document.getElementById('piIconPicker').innerHTML = PLAN_ICONS.map(ic =>
+        `<button type="button" class="plan-pick${ic === planDraft.icon ? ' sel' : ''}" data-pick-icon="${ic}" aria-label="Icon ${ic}">${ic}</button>`).join('');
+      document.getElementById('piColorPicker').innerHTML = PLAN_COLORS.map(c =>
+        `<button type="button" class="plan-pick plan-swatch plan-c-${c}${c === planDraft.color ? ' sel' : ''}" data-pick-color="${c}" aria-label="Color ${c}"></button>`).join('');
+    }
+    function updatePlanModeUi() {
+      const slotsMode = document.getElementById('piMode').value !== 'asNeeded';
+      document.getElementById('piSlotsWrap').classList.toggle('s-hidden', !slotsMode);
+      const n = document.querySelectorAll('#piSlots input:checked').length;
+      const t = document.getElementById('piTime');
+      t.disabled = !(slotsMode && n === 1);
+      if (t.disabled) t.value = '';
+    }
+    function openPlanItemModal(editId) {
+      const m = getCurMember();
+      if (!m) return;
+      editingPlanItemId = editId || null;
+      const it = editId ? (m.planItems || []).find(x => x.id === editId) : null;
+      const st = getPlanSettings(m);
+      document.getElementById('planItemModalTitle').textContent = it ? 'Edit Daily Plan item' : 'Add to Daily Plan';
+      document.getElementById('piKind').value = it ? it.kind : 'supplement';
+      document.getElementById('piName').value = it ? it.name : '';
+      document.getElementById('piDose').value = it ? it.dose : '';
+      document.getElementById('piMeal').value = it ? it.meal : 'any';
+      document.getElementById('piMode').value = it && planItemIsAsNeeded(it) ? 'asNeeded' : 'slots';
+      const chosen = it ? planItemSlots(it) : ['morning'];
+      document.getElementById('piSlots').innerHTML = PLAN_SLOT_IDS.map(id =>
+        `<label class="plan-slot-opt"><input type="checkbox" value="${id}"${chosen.includes(id) ? ' checked' : ''}> ${escapeHtml(st.slotLabels[id])} <span class="plan-group-time">${st.slotTimes[id]}</span></label>`).join('');
+      document.getElementById('piTime').value = it ? (it.time || '') : '';
+      document.getElementById('piStart').value = it ? (it.startDate || '') : localDateStr();
+      document.getElementById('piEnd').value = it ? (it.endDate || '') : '';
+      document.getElementById('piNote').value = it ? (it.note || '') : '';
+      planDraft = { icon: it ? it.icon : PLAN_ICONS[0], color: it ? it.color : PLAN_COLORS[0] };
+      document.getElementById('btnDeletePlanItem').classList.toggle('s-hidden', !it);
+      renderPlanPickers();
+      updatePlanModeUi();
+      document.getElementById('planItemModal').classList.add('active');
+    }
+    function closePlanItemModal() {
+      document.getElementById('planItemModal').classList.remove('active');
+      editingPlanItemId = null;
+    }
+    function savePlanItem() {
+      const m = getCurMember();
+      if (!m) return;
+      const name = document.getElementById('piName').value.trim();
+      if (!name) return alert('Please enter a name');
+      const mode = document.getElementById('piMode').value === 'asNeeded' ? 'asNeeded' : 'slots';
+      const slots = mode === 'slots' ? PLAN_SLOT_IDS.filter(id => document.querySelector(`#piSlots input[value="${id}"]`).checked) : [];
+      if (mode === 'slots' && !slots.length) return alert('Pick at least one time of day');
+      const startDate = document.getElementById('piStart').value;
+      const endDate = document.getElementById('piEnd').value;
+      if (!PLAN_DATE_RE.test(startDate)) return alert('Please pick a start date');
+      const prevItem = editingPlanItemId ? (m.planItems || []).find(x => x.id === editingPlanItemId) : null;
+      // (an item that was stopped before its first dose legitimately keeps endDate < startDate)
+      if (endDate && endDate < startDate && !(prevItem && prevItem.endDate === endDate)) return alert('The end date is before the start date');
+      const timeVal = document.getElementById('piTime').value;
+      const fields = {
+        kind: document.getElementById('piKind').value === 'medication' ? 'medication' : 'supplement',
+        name: name.slice(0, 80), dose: document.getElementById('piDose').value.trim().slice(0, 60),
+        meal: Object.prototype.hasOwnProperty.call(PLAN_MEALS, document.getElementById('piMeal').value) ? document.getElementById('piMeal').value : 'any',
+        schedule: { mode, slots },
+        time: (mode === 'slots' && slots.length === 1 && PLAN_TIME_RE.test(timeVal)) ? timeVal : '',
+        icon: planDraft.icon, color: planDraft.color,
+        note: document.getElementById('piNote').value.trim().slice(0, 200),
+        startDate, endDate: endDate || ''
+      };
+      const ok = planCommit(m, () => {
+        if (!m.planItems) m.planItems = [];
+        const existing = editingPlanItemId ? m.planItems.find(x => x.id === editingPlanItemId) : null;
+        if (existing) {
+          Object.assign(existing, fields);
+          bumpVersion(existing);
+        } else {
+          const maxOrder = Math.max(0, ...live(m.planItems).map(x => x.order || 0));
+          m.planItems.push(Object.assign({ id: freshId('pi'), order: maxOrder + 1, archivedRecordId: null }, fields, freshSyncMeta()));
+        }
+      });
+      if (!ok) return;
+      closePlanItemModal();
+      planRerender();
+    }
+    function deletePlanItem() {
+      const m = getCurMember();
+      const it = m && (m.planItems || []).find(x => x.id === editingPlanItemId);
+      if (!it) return;
+      if (!confirm(`Delete "${it.name}" from the Daily Plan?\n\nPast intake history for it is kept in the totals.`)) return;
+      if (planCommit(m, () => { tombstone(it); })) { closePlanItemModal(); planRerender(); }
+    }
+
+    // ---- slot times / names modal ----
+    function openPlanSlotsModal() {
+      const m = getCurMember();
+      if (!m) return;
+      const st = getPlanSettings(m);
+      PLAN_SLOT_IDS.forEach(id => {
+        document.getElementById('psLabel_' + id).value = st.slotLabels[id];
+        document.getElementById('psTime_' + id).value = st.slotTimes[id];
+      });
+      document.getElementById('planSlotsModal').classList.add('active');
+    }
+    function closePlanSlotsModal() { document.getElementById('planSlotsModal').classList.remove('active'); }
+    function savePlanSlots() {
+      const m = getCurMember();
+      if (!m) return;
+      const slotTimes = {}, slotLabels = {};
+      PLAN_SLOT_IDS.forEach(id => {
+        const t = document.getElementById('psTime_' + id).value;
+        slotTimes[id] = PLAN_TIME_RE.test(t) ? t : PLAN_SLOT_DEFAULTS[id].time;
+        slotLabels[id] = document.getElementById('psLabel_' + id).value.trim().slice(0, 20) || PLAN_SLOT_DEFAULTS[id].label;
+      });
+      const ok = planCommit(m, () => {
+        const prev = m.planSettings;
+        m.planSettings = { version: (prev && Number.isFinite(prev.version) ? prev.version : 0) + 1, updatedAt: nowIso(), slotTimes, slotLabels };
+      });
+      if (!ok) return;
+      closePlanSlotsModal();
+      planRerender();
+    }
+
+    // ---- housekeeping: fold old detail into monthly summaries ----
+    function planExpectedForMonth(it, month) {
+      if (!it || planItemIsAsNeeded(it)) return null;
+      const slots = planItemSlots(it).length;
+      const first = month + '-01', last = FHSMerge.monthEndStr(first);
+      const from = (it.startDate && it.startDate > first) ? it.startDate : first;
+      const to = (it.endDate && it.endDate < last) ? it.endDate : last;
+      return from > to ? 0 : (daysBetween(from, to) + 1) * slots;
+    }
+    // Only WHOLE months before the cutoff are folded, and merge-engine.js drops incoming
+    // detail by the same rule, so a stale device can't re-add rows that were already summarised.
+    function compactMemberIntakeLog(m, cutoff) {
+      if (!m || !Array.isArray(m.intakeLog) || !m.intakeLog.length) return false;
+      const keep = [], fold = new Map();
+      m.intakeLog.forEach(e => {
+        if (!FHSMerge.isCompactedDate(e.date, cutoff)) { keep.push(e); return; }
+        if (e.deletedAt) return;                                   // old undo markers: just drop
+        const month = e.date.slice(0, 7), key = e.itemId + '_' + month;
+        const s = fold.get(key) || { id: key, itemId: e.itemId, month, taken: 0, skipped: 0 };
+        if (e.status === 'taken') s.taken++; else if (e.status === 'skipped') s.skipped++;
+        fold.set(key, s);
+      });
+      if (keep.length === m.intakeLog.length) return false;
+      if (!Array.isArray(m.intakeSummaries)) m.intakeSummaries = [];
+      fold.forEach(s => {
+        s.expected = planExpectedForMonth((m.planItems || []).find(x => x.id === s.itemId), s.month);
+        const prev = m.intakeSummaries.find(x => x.id === s.id);
+        if (prev) {   // idempotent: never double-count
+          prev.taken = Math.max(prev.taken || 0, s.taken); prev.skipped = Math.max(prev.skipped || 0, s.skipped);
+          prev.expected = prev.expected == null ? s.expected : (s.expected == null ? prev.expected : Math.max(prev.expected, s.expected));
+        } else m.intakeSummaries.push(s);
+      });
+      m.intakeLog = keep;
+      return true;
+    }
+    function compactPlanLogs(allMembers) {
+      const cutoff = intakeCutoffDate();
+      (allMembers || []).forEach(m => compactMemberIntakeLog(m, cutoff));
+    }
+
+    // ---- import sanitising (backup files are untrusted input) ----
+    function normalizePlanItems(arr) {
+      return arr.filter(o => o && typeof o === 'object').map(it => {
+        const sc = (it.schedule && typeof it.schedule === 'object') ? it.schedule : {};
+        const mode = sc.mode === 'asNeeded' ? 'asNeeded' : 'slots';
+        return {
+          id: sanitizeId(it.id, freshId('pi')),
+          version: it.version, updatedAt: it.updatedAt, deletedAt: it.deletedAt, schemaVersion: it.schemaVersion,
+          kind: it.kind === 'medication' ? 'medication' : 'supplement',
+          name: String(it.name || 'Item').slice(0, 80), dose: String(it.dose || '').slice(0, 60),
+          meal: Object.prototype.hasOwnProperty.call(PLAN_MEALS, it.meal) ? it.meal : 'any',
+          schedule: { mode, slots: (mode === 'slots' && Array.isArray(sc.slots)) ? PLAN_SLOT_IDS.filter(s => sc.slots.includes(s)) : [] },
+          time: PLAN_TIME_RE.test(it.time || '') ? it.time : '',
+          icon: PLAN_ICONS.includes(it.icon) ? it.icon : PLAN_ICONS[0],
+          color: PLAN_COLORS.includes(it.color) ? it.color : PLAN_COLORS[0],
+          note: String(it.note || '').slice(0, 200),
+          order: Number.isFinite(it.order) ? it.order : 0,
+          startDate: PLAN_DATE_RE.test(it.startDate || '') ? it.startDate : '',
+          endDate: PLAN_DATE_RE.test(it.endDate || '') ? it.endDate : '',
+          archivedRecordId: it.archivedRecordId ? sanitizeId(it.archivedRecordId, null) : null
+        };
+      });
+    }
+    function normalizeIntakeLog(arr) {
+      const out = [];
+      arr.forEach(e => {
+        if (!e || typeof e !== 'object') return;
+        const itemId = sanitizeId(e.itemId, null);
+        if (!itemId || !PLAN_DATE_RE.test(e.date || '')) return;
+        const slot = PLAN_SLOT_IDS.includes(e.slot) ? e.slot : null;
+        const t = (typeof e.takenAt === 'string' && !isNaN(Date.parse(e.takenAt))) ? new Date(e.takenAt).toISOString() : null;
+        out.push({
+          id: slot ? makeIntakeId(itemId, e.date, slot) : sanitizeId(e.id, freshId('in')),
+          itemId, date: e.date, slot,
+          status: (slot && e.status === 'skipped') ? 'skipped' : 'taken', takenAt: t,
+          version: e.version, updatedAt: e.updatedAt, deletedAt: e.deletedAt, schemaVersion: e.schemaVersion
+        });
+      });
+      return out;
+    }
+    function normalizeIntakeSummaries(arr) {
+      const out = [], num = v => (Number.isFinite(v) && v >= 0) ? Math.floor(v) : 0;
+      arr.forEach(s => {
+        if (!s || typeof s !== 'object') return;
+        const itemId = sanitizeId(s.itemId, null);
+        if (!itemId || !/^\d{4}-\d{2}$/.test(s.month || '')) return;
+        out.push({ id: itemId + '_' + s.month, itemId, month: s.month, taken: num(s.taken), skipped: num(s.skipped),
+                   expected: (Number.isFinite(s.expected) && s.expected >= 0) ? Math.floor(s.expected) : null });
+      });
+      return out;
+    }
+    function normalizePlanSettings(o) {
+      if (!o || typeof o !== 'object') return undefined;
+      const slotTimes = {}, slotLabels = {};
+      PLAN_SLOT_IDS.forEach(id => {
+        slotTimes[id] = PLAN_TIME_RE.test((o.slotTimes || {})[id] || '') ? o.slotTimes[id] : PLAN_SLOT_DEFAULTS[id].time;
+        const l = typeof (o.slotLabels || {})[id] === 'string' ? o.slotLabels[id].trim().slice(0, 20) : '';
+        slotLabels[id] = l || PLAN_SLOT_DEFAULTS[id].label;
+      });
+      return { version: Number.isFinite(o.version) ? o.version : 1, updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : nowIso(), slotTimes, slotLabels };
+    }
+
+    // ---- click / change handling (delegated; see the document listeners at the bottom of the file) ----
+    function handlePlanClick(el) {
+      const d = el.dataset;
+      if ('planToggle' in d) return togglePlanDose(d.item, d.slot, d.date, false);
+      if ('planSkip' in d) return togglePlanDose(d.item, d.slot, d.date, true);
+      if ('planAsneeded' in d) return logAsNeededDose(d.item);
+      if ('planUndo' in d) return undoIntakeEntry(d.entryId);
+      if ('planAdd' in d) return openPlanItemModal(null);
+      if ('planEdit' in d) return openPlanItemModal(d.planEdit);
+      if ('planUp' in d) return movePlanItem(d.planUp, -1);
+      if ('planDown' in d) return movePlanItem(d.planDown, 1);
+      if ('planStop' in d) return stopPlanItem(d.planStop);
+      if ('planResume' in d) return resumePlanItem(d.planResume);
+      if ('planArchive' in d) return archivePlanItemClick(d.planArchive);
+      if ('planSettings' in d) return openPlanSlotsModal();
+      if ('planOpenTab' in d) return switchTab('plan');
+      if ('pickIcon' in d && PLAN_ICONS.includes(d.pickIcon)) { planDraft.icon = d.pickIcon; return renderPlanPickers(); }
+      if ('pickColor' in d && PLAN_COLORS.includes(d.pickColor)) { planDraft.color = d.pickColor; return renderPlanPickers(); }
+    }
+
     // ========== TABS ==========
     function switchTab(tab) {
       currentTab = tab;
@@ -3368,6 +4024,15 @@
         </tr>
       `).join('');
 
+      // Current daily plan: derived live from the plan (never stored a second time)
+      const planNow = sortedPlanItems(m).filter(it => planItemActiveOn(it, localDateStr()));
+      const planSectionHtml = planNow.length ? `
+          <h2 class="pr-h2">Current daily plan</h2>
+          <table class="pr-table">
+            <tr><th>Name</th><th>Dose</th><th>Taken</th><th>When</th><th>Notes</th></tr>
+            ${planNow.map(it => `<tr><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.dose) || '-'}</td><td>${escapeHtml(PLAN_MEALS[it.meal]) || '-'}</td><td>${escapeHtml(planWhenText(m, it))}</td><td>${escapeHtml(it.note) || '-'}</td></tr>`).join('')}
+          </table>` : '';
+
       const { html: attachmentsHtml, pdfJobs } = await buildAttachmentsSectionHtml(meds, selectedAttachmentKeys);
       const printContainer = startPrint();
       printContainer.innerHTML = `
@@ -3381,6 +4046,7 @@
             <tr><th>Medication</th><th>Date</th><th>Details / Dosage</th><th>Tags</th></tr>
             ${medRows || '<tr><td colspan="4" class="pr-empty">No medication records</td></tr>'}
           </table>
+          ${planSectionHtml}
           <div class="pr-footer">Generated by My Health on ${new Date().toLocaleString()}</div>
           ${attachmentsHtml}
         </div>
@@ -3875,6 +4541,10 @@
             repeatMonths: parseInt(cr.repeatMonths) || 0,
             notes: cr.notes || ''
           })) : [],
+          planItems: Array.isArray(raw.planItems) ? normalizePlanItems(raw.planItems) : undefined,
+          planSettings: normalizePlanSettings(raw.planSettings),
+          intakeLog: Array.isArray(raw.intakeLog) ? normalizeIntakeLog(raw.intakeLog) : undefined,
+          intakeSummaries: Array.isArray(raw.intakeSummaries) ? normalizeIntakeSummaries(raw.intakeSummaries) : undefined,
           records: Array.isArray(raw.records) ? raw.records.map(r => ({
             id: sanitizeId(r.id, freshId('r')),
             version: r.version, updatedAt: r.updatedAt, deletedAt: r.deletedAt, schemaVersion: r.schemaVersion,
@@ -3891,7 +4561,9 @@
       // Backfill anything missing (old export files, or fields normalize
       // above didn't touch) the exact same way local data gets migrated on
       // load - see design 2.6.
-      return migrateSyncFields(normalized);
+      migrateSyncFields(normalized);
+      compactPlanLogs(normalized);
+      return normalized;
     }
 
     async function migrateMemberAttachmentsToIdb(memberList) {
@@ -4008,7 +4680,8 @@
     // a full-object apply is safe for them.
     const CONTAINER_SCALAR_KEYS = {
       records: FHSMerge.RECORD_SCALAR_KEYS,
-      customReminders: FHSMerge.REMINDER_SCALAR_KEYS
+      customReminders: FHSMerge.REMINDER_SCALAR_KEYS,
+      planItems: FHSMerge.PLAN_ITEM_SCALAR_KEYS
     };
 
     // Applies a resolution choice and removes the conflict from the queue.
@@ -4224,7 +4897,7 @@
           // namespaced global - see that file's header comment for why)
           // is pure - it doesn't touch `members` or IndexedDB itself, just
           // returns the merged result plus whatever conflicts it found.
-          const result = FHSMerge.mergeMembers([members[idx]], [incoming]);
+          const result = FHSMerge.mergeMembers([members[idx]], [incoming], { intakeCutoff: intakeCutoffDate() });
           finalMember = result.members[0];
           conflicts = result.conflicts;
         } else {
@@ -4777,6 +5450,8 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     // (kept as data-attributes + delegation, rather than inline onclick="", so the
     // page's CSP can drop 'unsafe-inline' from script-src)
     document.addEventListener('click', function(e) {
+      const planEl = e.target.closest('[data-plan-toggle],[data-plan-skip],[data-plan-asneeded],[data-plan-undo],[data-plan-add],[data-plan-edit],[data-plan-up],[data-plan-down],[data-plan-stop],[data-plan-resume],[data-plan-archive],[data-plan-settings],[data-plan-open-tab],[data-pick-icon],[data-pick-color]');
+      if (planEl) { handlePlanClick(planEl); return; }
       const reportBtn = e.target.closest('[data-report-type]');
       if (reportBtn) {
         if (reportBtn.closest('#sidebarPanel')) closeSidebarOnMobile();
@@ -4788,6 +5463,12 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
         openReminderModal(reminderBtn.dataset.openReminderModal);
         return;
       }
+    });
+
+    // Daily Plan: editing the time a dose was taken (native <input type="time">)
+    document.addEventListener('change', function(e) {
+      const t = e.target.closest ? e.target.closest('[data-plan-takentime]') : null;
+      if (t) editIntakeTime(t);
     });
 
     // ===== PWA: simple offline indicator =====

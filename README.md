@@ -7,6 +7,7 @@
 - 🗄️ IndexedDB 加密存储(附件照片/PDF 静态加密)
 - 📦 Pack ZIP 备份(开启加密时,备份 JSON + `attachments/` 内所有文件均整体加密)
 - 🔀 单成员导入的字段/条目级合并 + 冲突审阅
+- 💊 Daily Plan(v62):每日补剂/药品清单,打卡/跳过、按需服用记录、时段可配置,日志 90 天滚动 + 月度汇总(详见 DAILY_PLAN_DESIGN.md)
 - 📱 PWA:可安装到主屏幕、Service Worker 离线缓存
 
 所有数据都只保存在**用户自己浏览器的 localStorage / IndexedDB** 里,没有任何后端或云端同步。
