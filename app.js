@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v54';
+    const APP_VERSION = 'v55';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1940,6 +1940,17 @@
       `;
     }
 
+    // Lab text stores abnormal flags as a literal ❌ inside the details string.
+    // Render those lines in amber with a warning glyph (display-only; stored text untouched).
+    function formatRecordDetails(text) {
+      return String(text).split('\n').map(line => {
+        const safe = escapeHtml(line);
+        if (line.includes('❌')) return `<span class="lab-abn">${safe.replace(/❌/g, '<span class="lab-abn-ico" title="Out of reference range">⚠</span>')}</span>`;
+        if (/^\s*【.+】\s*$/.test(line)) return `<span class="lab-sec">${safe}</span>`;
+        return safe;
+      }).join('\n');
+    }
+
     function renderRecords(m) {
       return `
         <div class="card">
@@ -1959,14 +1970,14 @@
                   <div class="timeline-dot ${color}"></div>
                   <div class="timeline-content">
                     <div class="s-140c3f9b">
-                      <div class="timeline-date">${escapeHtml(r.date)} &middot; ${icon} ${escapeHtml(r.type)}</div>
-                      <div class="s-ef34e083">
-                        <span class="member-delete s-19e87f8e" data-edit-record="${escapeHtml(r.id)}" title="Edit record">✏️</span>
-                        <span class="member-delete s-19e87f8e" data-delete-record="${escapeHtml(r.id)}" title="Delete record">&times;</span>
+                      <div class="rec-meta"><span class="rec-chip rec-chip-${color}">${icon} ${escapeHtml(r.type)}</span><span class="timeline-date">${escapeHtml(r.date)}</span></div>
+                      <div class="rec-actions">
+                        <button type="button" class="rec-act" data-edit-record="${escapeHtml(r.id)}" title="Edit record" aria-label="Edit record">✎</button>
+                        <button type="button" class="rec-act rec-act-del" data-delete-record="${escapeHtml(r.id)}" title="Delete record" aria-label="Delete record">&times;</button>
                       </div>
                     </div>
                     <div class="timeline-title">${escapeHtml(r.title)}</div>
-                    ${r.details ? `<div class="timeline-desc">${escapeHtml(r.details)}</div>` : ''}
+                    ${r.details ? `<div class="timeline-desc">${formatRecordDetails(r.details)}</div>` : ''}
                     ${r.vitals?.systolic ? `<div class="timeline-desc">🩺 BP ${r.vitals.systolic}/${r.vitals.diastolic} &middot; HR ${r.vitals.heartRate || '--'}</div>` : ''}
                     <div class="timeline-tags">
                       ${(r.tags || []).map(t => `<span class="tag tag-green">${escapeHtml(t)}</span>`).join('')}
