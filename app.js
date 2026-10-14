@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v58';
+    const APP_VERSION = 'v59';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1719,9 +1719,15 @@
 
       // Expand / collapse long reminder notes
       document.addEventListener('click', (e) => {
-        const n = e.target.closest('[data-toggle-notes]');
-        if (n) n.classList.toggle('open');
+        const btn = e.target.closest('.notes-toggle');
+        if (!btn) return;
+        const notes = btn.parentElement.querySelector('.reminder-notes');
+        if (!notes) return;
+        const open = notes.classList.toggle('open');
+        btn.textContent = open ? 'Show less' : 'Show more';
       });
+      let clampResizeTimer = null;
+      window.addEventListener('resize', () => { clearTimeout(clampResizeTimer); clampResizeTimer = setTimeout(markClampedNotes, 150); });
 
       // Sidebar buttons
       document.getElementById('btnAddMember').addEventListener('click', () => openModal('member'));
@@ -1925,6 +1931,15 @@
         });
       });
 
+      // Auto-reminder hide / restore + "Show more" on long notes
+      main.querySelectorAll('[data-dismiss-reminder]').forEach(btn => {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); dismissAutoReminder(btn.dataset.dismissReminder); });
+      });
+      main.querySelectorAll('[data-restore-dismissed]').forEach(btn => {
+        btn.addEventListener('click', () => restoreDismissedReminders());
+      });
+      markClampedNotes();
+
       // Bind custom reminder actions (present when Reminders tab is active)
       main.querySelectorAll('[data-done-reminder]').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -2005,7 +2020,7 @@
                 <div class="reminder-text">
                   <div class="reminder-title">${r.title}</div>
                   <div class="reminder-date">${r.date}</div>
-                  ${r.notes ? `<div class="reminder-notes" data-toggle-notes role="button" tabindex="0" title="Tap to expand">${r.notes}</div>` : ''}
+                  ${r.notes ? `<div class="reminder-notes">${r.notes}</div><button type="button" class="notes-toggle" data-toggle-notes hidden>Show more</button>` : ''}
                 </div>
                 ${r.status !== 'ok' ? `<span class="tag ${r.status === 'overdue' ? 'tag-red' : 'tag-yellow'}">${r.statusText}</span>` : ''}
               </div>
@@ -2015,7 +2030,7 @@
 
         <div class="card">
           <div class="card-title">📄 Reports</div>
-          <div class="report-grid">
+          <div class="report-wrap"><div class="report-grid">
             <button class="report-card" data-report-type="summary" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📋</span><span class="report-name">Health Summary</span></button>
             <button class="report-card" data-report-type="vaccine" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💉</span><span class="report-name">Vaccine Record</span></button>
             <button class="report-card" data-report-type="medication" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">💊</span><span class="report-name">Medication List</span></button>
@@ -2023,7 +2038,7 @@
             <button class="report-card" data-report-type="bp" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">🩺</span><span class="report-name">BP Log</span></button>
             <button class="report-card" data-report-type="growth" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📏</span><span class="report-name">Growth Chart</span></button>
             <button class="report-card" data-report-type="annual" data-report-member="${escapeHtml(m.id)}"><span class="report-ico">📅</span><span class="report-name">Annual Report</span></button>
-          </div>
+          </div></div>
         </div>
       `;
     }
@@ -2126,17 +2141,24 @@
                 <div class="reminder-text">
                   <div class="reminder-title">${r.title}</div>
                   <div class="reminder-date">${r.date}</div>
-                  ${r.notes ? `<div class="reminder-notes" data-toggle-notes role="button" tabindex="0" title="Tap to expand">${r.notes}</div>` : ''}
+                  ${r.notes ? `<div class="reminder-notes">${r.notes}</div><button type="button" class="notes-toggle" data-toggle-notes hidden>Show more</button>` : ''}
                 </div>
                 <span class="tag ${r.status === 'overdue' ? 'tag-red' : r.status === 'upcoming' ? 'tag-yellow' : 'tag-green'}">${r.statusText}</span>
                 ${r.isCustom ? `
-                  <span class="member-delete s-19e87f8e" data-done-reminder="${escapeHtml(r.id)}" title="Mark done">✔️</span>
-                  <span class="member-delete s-19e87f8e" data-edit-reminder="${escapeHtml(r.id)}" title="Edit">✏️</span>
-                  <span class="member-delete s-19e87f8e" data-delete-reminder="${escapeHtml(r.id)}" title="Delete">&times;</span>
-                ` : ''}
+                  <span class="rec-actions">
+                    <button type="button" class="rec-act rec-act-ok" data-done-reminder="${escapeHtml(r.id)}" title="Mark done" aria-label="Mark done">✓</button>
+                    <button type="button" class="rec-act" data-edit-reminder="${escapeHtml(r.id)}" title="Edit" aria-label="Edit">✎</button>
+                    <button type="button" class="rec-act rec-act-del" data-delete-reminder="${escapeHtml(r.id)}" title="Delete" aria-label="Delete">&times;</button>
+                  </span>
+                ` : (r.dismissKey ? `
+                  <span class="rec-actions">
+                    <button type="button" class="rec-act rec-act-del" data-dismiss-reminder="${escapeHtml(r.dismissKey)}" title="Hide this reminder" aria-label="Hide this reminder">&times;</button>
+                  </span>
+                ` : '')}
               </div>
             `).join('') || '<p class="s-9155c939">No reminders</p>'}
           </div>
+          ${reminders.hiddenCount ? `<button type="button" class="link-btn" data-restore-dismissed>Show ${reminders.hiddenCount} hidden reminder${reminders.hiddenCount === 1 ? '' : 's'}</button>` : ''}
         </div>
       `;
     }
@@ -2494,6 +2516,45 @@
     }
 
     // ========== REMINDERS ==========
+    // Auto-generated reminders (Annual Physical, Flu Vaccine, BP Monitoring) are
+    // computed from your records, so they can't be deleted - only hidden. A
+    // hidden reminder comes back by itself once its due date changes (e.g. after
+    // you add a new Checkup). Stored per device, outside the synced health data.
+    // Show the "Show more" button only on notes that are actually cut off.
+    function markClampedNotes() {
+      document.querySelectorAll('.reminder-notes').forEach(n => {
+        const btn = n.parentElement && n.parentElement.querySelector('.notes-toggle');
+        if (!btn) return;
+        const open = n.classList.contains('open');
+        btn.hidden = !(open || n.scrollHeight > n.clientHeight + 1);
+      });
+    }
+    const DISMISSED_REM_KEY = 'family_health_tracker_dismissed_reminders';
+    function getDismissedReminders() {
+      try {
+        const o = JSON.parse(localStorage.getItem(DISMISSED_REM_KEY) || '{}');
+        return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+      } catch { return {}; }
+    }
+    function setDismissedReminders(o) {
+      try { localStorage.setItem(DISMISSED_REM_KEY, JSON.stringify(o)); } catch { /* storage full/blocked: keep working */ }
+    }
+    function dismissAutoReminder(key) {
+      if (!confirm('Hide this reminder?\n\nIt will come back on its own when the due date changes (for example after you add a new record).')) return;
+      const d = getDismissedReminders();
+      const list = Array.isArray(d[currentMemberId]) ? d[currentMemberId] : [];
+      if (!list.includes(key)) list.push(key);
+      d[currentMemberId] = list;
+      setDismissedReminders(d);
+      renderMain();
+    }
+    function restoreDismissedReminders() {
+      const d = getDismissedReminders();
+      delete d[currentMemberId];
+      setDismissedReminders(d);
+      renderMain();
+    }
+
     function generateReminders(m) {
       const reminders = [];
       const today = new Date();
@@ -2505,6 +2566,7 @@
         const daysDiff = Math.floor((nextExam - today) / 86400000);
         reminders.push({
           title: 'Annual Physical',
+          dismissKey: `annual|${localDateStr(nextExam)}`,
           date: `Recommended by ${localDateStr(nextExam)}`,
           status: daysDiff < 0 ? 'overdue' : daysDiff < 30 ? 'upcoming' : 'ok',
           statusText: daysDiff < 0 ? 'Overdue' : daysDiff < 30 ? 'Due Soon' : 'OK',
@@ -2519,6 +2581,7 @@
         const daysDiff = Math.floor((nextFlu - today) / 86400000);
         reminders.push({
           title: 'Flu Vaccine',
+          dismissKey: `flu|${localDateStr(nextFlu)}`,
           date: `Recommended by ${localDateStr(nextFlu)}`,
           status: daysDiff < 0 ? 'overdue' : daysDiff < 60 ? 'upcoming' : 'ok',
           statusText: daysDiff < 0 ? 'Overdue' : daysDiff < 60 ? 'Due Soon' : 'OK',
@@ -2533,6 +2596,7 @@
           const daysSince = Math.floor((today - bpDate) / 86400000);
           reminders.push({
             title: 'BP Monitoring',
+            dismissKey: `bp|${lastBP.date}`,
             date: `Last measured ${lastBP.date} (${daysSince} days ago)`,
             status: daysSince > 7 ? 'overdue' : daysSince > 3 ? 'upcoming' : 'ok',
             statusText: daysSince > 7 ? 'Check Now' : daysSince > 3 ? 'Recent' : 'OK',
@@ -2556,10 +2620,14 @@
         });
       });
 
-      return reminders.sort((a,b) => {
+      const hiddenKeys = new Set(getDismissedReminders()[m.id] || []);
+      const visible = reminders.filter(r => r.isCustom || !hiddenKeys.has(r.dismissKey));
+      const sorted = visible.sort((a,b) => {
         const order = { overdue: 0, upcoming: 1, ok: 2 };
         return order[a.status] - order[b.status];
       });
+      sorted.hiddenCount = reminders.length - visible.length;
+      return sorted;
     }
 
     // ========== CUSTOM REMINDERS ==========
