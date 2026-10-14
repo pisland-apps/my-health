@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v56';
+    const APP_VERSION = 'v57';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1397,6 +1397,61 @@
       }
     });
 
+    // ========== SETTINGS: auto-lock + UI state ==========
+    const AUTOLOCK_KEY = 'family_health_tracker_autolock_min';
+    const AUTOLOCK_CHOICES = [1, 2, 5, 10, 15, 30];
+    let lastActivityAt = Date.now();
+
+    function getAutoLockMin() {
+      const v = parseInt(localStorage.getItem(AUTOLOCK_KEY) || '0', 10);
+      return AUTOLOCK_CHOICES.includes(v) ? v : 0;
+    }
+
+    function refreshSettingsUI() {
+      const enc = isEncryptionEnabled();
+      const sel = document.getElementById('autoLockSelect');
+      sel.value = String(getAutoLockMin());
+      sel.disabled = !enc;
+      document.getElementById('autoLockHint').textContent = enc
+        ? 'Locks the app after this long with no taps, clicks or key presses. You will need your passcode (or biometrics) to continue.'
+        : 'Turn on a passcode under Security first - auto-lock needs it.';
+      // Clear All Data lives on the lock screen when a passcode is on; only show it here when there is no lock screen.
+      document.getElementById('setDangerSection').style.display = enc ? 'none' : 'block';
+    }
+
+    ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(ev =>
+      document.addEventListener(ev, () => { lastActivityAt = Date.now(); }, { capture: true, passive: true })
+    );
+
+    function checkAutoLock() {
+      const min = getAutoLockMin();
+      if (!min || !isEncryptionEnabled() || !isUnlocked()) return;
+      if (Date.now() - lastActivityAt >= min * 60000) {
+        document.getElementById('settingsModal').classList.remove('active');
+        document.getElementById('securityModal').classList.remove('active');
+        relockApp();
+      }
+    }
+    setInterval(checkAutoLock, 10000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAutoLock(); });
+
+    // ========== LOCK SCREEN: "Forgot passcode? Reset app data" ==========
+    // Wipes everything this app stores on the device (data, attachments, passcode +
+    // biometric config), then reloads into a fresh state. Deliberately irreversible.
+    async function wipeAllAppData() {
+      Object.keys(localStorage).filter(k => k.startsWith('family_health_tracker')).forEach(k => localStorage.removeItem(k));
+      try { await idbClearAll(); } catch (e) { /* IndexedDB may already be empty */ }
+      try { await idbDeleteRaw(BIO_GATE_KEY_ID); } catch (e) { /* nothing to clean up */ }
+      cryptoLock();
+    }
+    document.getElementById('btnAppLockReset').addEventListener('click', async () => {
+      if (!confirm('Reset app data?\n\nThis permanently erases ALL health records, attachments and passcode settings stored on this device. It cannot be undone.\n\nOnly continue if you have a backup, or you cannot recover the passcode.')) return;
+      const typed = prompt('Type RESET to confirm erasing all data on this device.');
+      if (typed === null || typed.trim().toUpperCase() !== 'RESET') { alert('Reset cancelled. Nothing was erased.'); return; }
+      await wipeAllAppData();
+      location.reload();
+    });
+
     // Re-shows the lock screen (used by "Lock Now") without reloading the page.
     // Members already in memory stay decrypted in memory, but the UI is fully
     // covered and unusable until the passcode is entered again.
@@ -1637,16 +1692,30 @@
       document.getElementById('btnZip').addEventListener('click', () => openExportOptionsModal('zip'));
       document.getElementById('btnAddRecord').addEventListener('click', () => openModal('record'));
 
-      // "More" dropdown (Export / Import / Pack ZIP / Security)
-      (function () {
-        const btn = document.getElementById('btnMore');
-        const menu = document.getElementById('moreMenu');
-        const setOpen = (open) => { menu.classList.toggle('open', open); btn.setAttribute('aria-expanded', open ? 'true' : 'false'); };
-        btn.addEventListener('click', (e) => { e.stopPropagation(); setOpen(!menu.classList.contains('open')); });
-        menu.addEventListener('click', () => setOpen(false));
-        document.addEventListener('click', (e) => { if (!menu.contains(e.target) && e.target !== btn) setOpen(false); });
-        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
-      })();
+      // Header: Lock + Save (backup ZIP)
+      document.getElementById('btnLockHeader').addEventListener('click', () => {
+        if (isEncryptionEnabled()) relockApp();
+        else document.getElementById('btnSecurity').click(); // no passcode yet -> open setup
+      });
+      document.getElementById('btnSaveHeader').addEventListener('click', () => openExportOptionsModal('zip'));
+
+      // Setting modal (opened from the sidebar)
+      const settingsModal = document.getElementById('settingsModal');
+      const closeSettings = () => settingsModal.classList.remove('active');
+      document.getElementById('btnSettings').addEventListener('click', () => {
+        toggleSidebar(false);
+        refreshSettingsUI();
+        settingsModal.classList.add('active');
+        updateStorageMeter();
+      });
+      document.getElementById('btnCloseSettings').addEventListener('click', closeSettings);
+      settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal || e.target.closest('[data-close-settings]')) closeSettings();
+      });
+      document.getElementById('autoLockSelect').addEventListener('change', (e) => {
+        localStorage.setItem(AUTOLOCK_KEY, String(parseInt(e.target.value, 10) || 0));
+        lastActivityAt = Date.now();
+      });
 
       // Expand / collapse long reminder notes
       document.addEventListener('click', (e) => {

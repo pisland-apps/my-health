@@ -36,7 +36,7 @@
     .btn-sm { padding: 6px 12px; font-size: 13px; }
 
     .container { display: flex; height: calc(100vh - 65px); position: relative; }
-    .sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; transition: transform 0.25s ease; }
+    .sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; transition: transform 0.25s ease; display: flex; flex-direction: column; }
     .main { flex: 1; overflow-y: auto; padding: 20px; min-width: 0; }
     .sidebar-toggle { display: none; }
     .sidebar-backdrop { display: none; }
@@ -505,12 +505,6 @@
 .timeline-content .attachment-path { color:#9ca3af; }
 
 /* ---- Overview polish (v55) ---- */
-.more-wrap { position:relative; }
-.more-menu { display:none; position:absolute; right:0; top:calc(100% + 6px); min-width:180px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:6px; z-index:60; }
-.more-menu.open { display:block; }
-.more-item { display:flex; align-items:center; gap:8px; width:100%; padding:9px 12px; border:none; background:transparent; border-radius:8px; font-size:14px; color:var(--text); cursor:pointer; text-align:left; }
-.more-item:hover, .more-item:focus-visible { background:var(--bg); outline:none; }
-.more-sep { height:1px; background:var(--border); margin:4px 6px; }
 
 .empty-val { color:#c0c4cc; font-weight:400; }
 .stat-value.empty { color:#c0c4cc; font-weight:400; }
@@ -528,3 +522,31 @@
 .report-card:hover { transform:translateY(-2px); border-color:var(--primary); box-shadow:0 4px 12px rgba(13,148,136,.12); }
 .report-card:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .report-ico { font-size:22px; line-height:1; }
+
+/* ---- Header icon buttons, Setting, lock-screen reset (v57) ---- */
+.icon-btn { width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center; border:none; border-radius:10px; background:transparent; color:var(--text); cursor:pointer; transition:background .15s; }
+.icon-btn:hover { background:var(--bg); }
+.icon-btn:focus-visible, .sidebar-setting:focus-visible, .set-row:focus-visible, .lock-reset-link:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+
+.sidebar-foot { position:sticky; bottom:0; margin-top:auto; background:var(--surface); border-top:1px solid var(--border); padding:8px; }
+.sidebar-setting { display:flex; align-items:center; gap:10px; width:100%; padding:10px 12px; border:none; border-radius:10px; background:transparent; color:var(--text); font-size:14px; font-weight:500; cursor:pointer; text-align:left; }
+.sidebar-setting:hover { background:var(--bg); }
+@media (min-width: 769px) and (hover: none) and (pointer: coarse) {
+  .sidebar:not(.open) .sidebar-setting { justify-content:center; padding:10px 4px; }
+  .sidebar:not(.open) .sidebar-setting-label { display:none; }
+}
+
+.settings-modal { max-width:460px; }
+.set-section { margin-bottom:18px; }
+.set-title { font-size:12px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; color:var(--text-secondary); margin-bottom:8px; }
+.set-row { display:flex; align-items:center; gap:8px; width:100%; padding:11px 14px; margin-bottom:6px; border:1px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text); font-size:14px; font-weight:500; cursor:pointer; text-align:left; transition:background .15s, border-color .15s; }
+.set-row:hover { border-color:var(--primary); background:var(--primary-light); }
+.set-row-danger { color:var(--danger); }
+.set-row-danger:hover { background:var(--danger-light); border-color:var(--danger); }
+.set-field { margin-top:10px; }
+.set-label { display:block; font-size:13px; font-weight:500; margin-bottom:6px; }
+.set-hint { font-size:12px; color:var(--text-secondary); margin-top:6px; line-height:1.5; }
+
+.lock-reset-wrap { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); text-align:center; }
+.lock-reset-link { background:none; border:none; padding:4px; font-size:12px; color:var(--text-secondary); text-decoration:underline; cursor:pointer; }
+.lock-reset-link:hover { color:var(--danger); }
