@@ -524,14 +524,14 @@
     </div>
   </div>
 
-  <!-- Daily Plan: add/edit item -->
+  <!-- Daily Plan: add/edit medicine -->
   <div class="modal-overlay" id="planItemModal">
     <div class="modal">
-      <div class="modal-header" id="planItemModalTitle">Add to Daily Plan</div>
+      <div class="modal-header" id="planItemModalTitle">Add medicine</div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label" for="piName">Name</label>
-          <input class="form-input" id="piName" maxlength="80" placeholder="e.g. Vitamin D3">
+          <input class="form-input" id="piName" maxlength="80" placeholder="e.g. Amoxicillin">
         </div>
         <div class="form-group">
           <label class="form-label" for="piKind">Type</label>
@@ -544,7 +544,7 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label" for="piDose">Dose</label>
-          <input class="form-input" id="piDose" maxlength="60" placeholder="e.g. 1000 IU, 2 capsules">
+          <input class="form-input" id="piDose" maxlength="60" placeholder="e.g. 500 mg, 2 capsules">
         </div>
         <div class="form-group">
           <label class="form-label" for="piMeal">With food</label>
@@ -558,9 +558,14 @@
         </div>
       </div>
       <div class="form-group">
+        <label class="form-label" for="piPlan">Plan</label>
+        <select class="form-select" id="piPlan"></select>
+      </div>
+      <div class="form-group">
         <label class="form-label" for="piMode">Schedule</label>
         <select class="form-select" id="piMode">
           <option value="slots">At set times of day</option>
+          <option value="interval">Every N hours (e.g. every 8 hours)</option>
           <option value="asNeeded">As needed (log each dose)</option>
         </select>
       </div>
@@ -573,6 +578,19 @@
           <label class="form-label" for="piTime">Exact time (optional, when only one time of day is picked)</label>
           <input class="form-input" type="time" id="piTime">
         </div>
+      </div>
+      <div id="piIntervalWrap" class="s-hidden">
+        <div class="form-group">
+          <label class="form-label" for="piHours">Hours between doses</label>
+          <div class="plan-picker" id="piHoursPicker"></div>
+          <input class="form-input" type="number" id="piHours" min="1" max="72" step="1" value="8" aria-label="Hours between doses">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="piFirst">First dose at</label>
+          <input class="form-input" type="time" id="piFirst">
+          <div class="plan-sub" id="piFirstHint"></div>
+        </div>
+        <p class="plan-sub">The next dose is counted from the dose you actually take, so a late dose moves the next one later too. The app cannot ring an alarm - use your phone's alarm for night doses.</p>
       </div>
       <div class="form-group">
         <label class="form-label">Icon</label>
@@ -592,14 +610,78 @@
           <input class="form-input" type="date" id="piEnd">
         </div>
       </div>
+      <div class="plan-sub" id="piDateHint"></div>
       <div class="form-group">
         <label class="form-label" for="piNote">Note (optional)</label>
-        <input class="form-input" id="piNote" maxlength="200" placeholder="e.g. take with the biggest meal">
+        <input class="form-input" id="piNote" maxlength="200" placeholder="e.g. finish the whole course">
       </div>
+      <div class="plan-sub plan-ok" id="piMsg" role="status"></div>
       <div class="modal-actions">
         <button class="btn btn-danger s-hidden" id="btnDeletePlanItem">Delete</button>
         <button class="btn btn-secondary" id="btnCancelPlanItem">Cancel</button>
+        <button class="btn btn-secondary" id="btnSaveAddAnother">Save &amp; add another</button>
         <button class="btn btn-primary" id="btnSavePlanItem">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily Plan: plan (course) -->
+  <div class="modal-overlay" id="planEditModal">
+    <div class="modal">
+      <div class="modal-header" id="planEditTitle">New plan</div>
+      <div class="form-group">
+        <label class="form-label" for="plName">Plan name</label>
+        <input class="form-input" id="plName" maxlength="80" placeholder="e.g. Flu - Dr Lim">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="plNote">Note (optional)</label>
+        <input class="form-input" id="plNote" maxlength="200" placeholder="e.g. clinic, reason, doctor's advice">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="plStart">Start date</label>
+          <input class="form-input" type="date" id="plStart">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="plEnd">End date (optional)</label>
+          <input class="form-input" type="date" id="plEnd">
+        </div>
+      </div>
+      <p class="plan-sub">Medicines in a plan follow its dates unless you give a medicine its own.</p>
+      <div id="plDanger" class="plan-danger s-hidden">
+        <button class="btn btn-secondary btn-sm" id="btnClearPlanHistory">Delete calendar history…</button>
+        <button class="btn btn-danger btn-sm" id="btnDeletePlan">Delete plan…</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelPlan">Cancel</button>
+        <button class="btn btn-primary" id="btnSavePlan">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily Plan: skip a dose (optional reason goes into that day's note) -->
+  <div class="modal-overlay" id="planSkipModal">
+    <div class="modal">
+      <div class="modal-header">Skip this dose?</div>
+      <p class="plan-sub">Optional - tap a reason to add it to today's note.</p>
+      <div class="plan-picker" id="planSkipChips"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnCancelSkip">Cancel</button>
+        <button class="btn btn-primary" id="btnConfirmSkip">Skip dose</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily Plan: one calendar day -->
+  <div class="modal-overlay" id="planDayModal">
+    <div class="modal">
+      <div class="modal-header" id="planDayTitle"></div>
+      <div id="planDayBody"></div>
+      <div class="modal-actions">
+        <button class="btn btn-danger btn-sm" id="btnDeleteDay">Delete this day…</button>
+        <button class="btn btn-secondary btn-sm" id="btnAddDayRecord">+ Add record</button>
+        <button class="btn btn-secondary" id="btnClosePlanDay">Close</button>
+        <button class="btn btn-primary" id="btnSaveDayNotes">Save notes</button>
       </div>
     </div>
   </div>

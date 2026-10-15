@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v62';
+    const APP_VERSION = 'v64';
     const APP_VERSION_DATE = '2026-10-14';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -430,6 +430,9 @@
         stampArray(m.customReminders);
         stampArray(m.planItems);
         stampArray(m.intakeLog);
+        stampArray(m.plans);
+        stampArray(m.dayNotes);
+        stampArray(m.dayRollups);
         if (m.bloodTypeAttachment && typeof m.bloodTypeAttachment === 'object' && !('deletedAt' in m.bloodTypeAttachment)) {
           m.bloodTypeAttachment.deletedAt = null;
         }
@@ -1607,7 +1610,7 @@
       bloodTypeAttachment: 'Blood type document'
     };
     const CONFLICT_CONTAINER_LABELS = {
-      records: 'Health record', customReminders: 'Reminder', historyEntries: 'Medical history note', planItems: 'Daily Plan item'
+      records: 'Health record', customReminders: 'Reminder', historyEntries: 'Medical history note', planItems: 'Daily Plan medicine', plans: 'Daily Plan', dayNotes: 'Calendar note'
     };
     // A short one-line summary per entity type, for the two "before/after"
     // columns - design 2.7 explicitly wants no inline diffing, just enough
@@ -1619,6 +1622,8 @@
         case 'records': return escapeHtml(`${obj.title || obj.type || 'Record'} · ${obj.date || ''}`);
         case 'customReminders': return escapeHtml(`${obj.title || 'Reminder'} · due ${obj.dueDate || ''}`);
         case 'historyEntries': return escapeHtml(obj.text || '');
+        case 'plans': return escapeHtml(`${obj.name || 'Plan'}${obj.note ? ' · ' + obj.note : ''}`);
+        case 'dayNotes': return escapeHtml(`${obj.date || ''}: ${obj.text || ''}`);
         case 'planItems': return escapeHtml(`${obj.name || 'Item'}${obj.dose ? ' · ' + obj.dose : ''}`);
         default: return escapeHtml(JSON.stringify(obj).slice(0, 120));
       }
@@ -1750,7 +1755,20 @@
       document.getElementById('btnCancelReminder').addEventListener('click', closeReminderModal);
       document.getElementById('btnSaveReminder').addEventListener('click', saveCustomReminder);
       document.getElementById('btnCancelPlanItem').addEventListener('click', closePlanItemModal);
-      document.getElementById('btnSavePlanItem').addEventListener('click', savePlanItem);
+      document.getElementById('btnSavePlanItem').addEventListener('click', () => savePlanItem(false));
+      document.getElementById('btnSaveAddAnother').addEventListener('click', () => savePlanItem(true));
+      document.getElementById('btnCancelPlan').addEventListener('click', closePlanEditModal);
+      document.getElementById('btnSavePlan').addEventListener('click', savePlan);
+      document.getElementById('btnDeletePlan').addEventListener('click', deletePlan);
+      document.getElementById('btnClearPlanHistory').addEventListener('click', clearPlanHistory);
+      document.getElementById('btnCancelSkip').addEventListener('click', closeSkipModal);
+      document.getElementById('btnConfirmSkip').addEventListener('click', confirmSkip);
+      document.getElementById('btnClosePlanDay').addEventListener('click', closePlanDayModal);
+      document.getElementById('btnSaveDayNotes').addEventListener('click', saveDayNotes);
+      document.getElementById('btnAddDayRecord').addEventListener('click', addRecordForDay);
+      document.getElementById('btnDeleteDay').addEventListener('click', deletePlanDay);
+      document.getElementById('piHours').addEventListener('input', renderPlanPickers);
+      document.getElementById('piPlan').addEventListener('change', updatePlanModeUi);
       document.getElementById('btnDeletePlanItem').addEventListener('click', deletePlanItem);
       document.getElementById('piMode').addEventListener('change', updatePlanModeUi);
       document.getElementById('piSlots').addEventListener('change', updatePlanModeUi);
@@ -2759,20 +2777,21 @@
       renderMain();
     }
 
-    // ========== DAILY PLAN (v62) ==========
-    // What to take (the PLAN: m.planItems) is kept apart from what was
-    // actually taken (the LOG: m.intakeLog), because "taken" is a per-day fact.
-    //   plan item : { id, kind, name, dose, meal, schedule:{mode,slots}, time, icon, color,
-    //                 note, order, startDate, endDate, archivedRecordId, ...sync meta }
-    //   log entry : slot doses  -> id `${itemId}_${date}_${slot}` (deterministic, so two devices
-    //                              logging the same dose merge into ONE entry)
-    //               as-needed   -> id freshId('in') (never changes, even when takenAt is edited)
-    //   summaries : m.intakeSummaries - one row per item per month once the detail is older than
-    //                PLAN_KEEP_DAYS (whole months only, see merge-engine.js isCompactedDate)
-    //   settings  : m.planSettings - per-member slot times + labels
-    // Ids use "_" rather than "|" because sanitizeId() only accepts [A-Za-z0-9_-].
-    // Plan items / log entries are never rendered from raw ids without escapeHtml, and all
-    // enums (kind, meal, icon, color, slots) are validated on import - see normalizePlanItems().
+    // ========== DAILY PLAN (v62 -> v64) ==========
+    // PLAN   = m.plans[]       one course/routine ("Flu - Dr Lim") that groups several medicines.
+    // ITEM   = m.planItems[]   one medicine/supplement. planId null = the "General" group.
+    //          schedule.mode: 'slots' (set times of day) | 'interval' (every N hours, counted from
+    //          the dose actually taken) | 'asNeeded'.
+    // LOG    = m.intakeLog[]   what was actually done. Per-dose detail is kept PLAN_KEEP_DAYS.
+    //            slot doses     id `${itemId}_${date}_${slot}` (deterministic -> two devices logging
+    //                           the same dose merge into ONE entry)
+    //            interval/as-needed doses  random id; status 'taken' | 'skipped' | 'missed';
+    //                           `dueAt` = when it was due, `fillFor` = the taken dose that auto-created
+    //                           this 'missed' filler (undoing the dose removes its fillers)
+    // ROLLUP = m.dayRollups[]  one row per plan per day, written when detail ages out, kept until the
+    //                           user deletes it. `cleared:true` = "user wiped this day" (never recomputed).
+    // NOTES  = m.dayNotes[]    one short note per plan per day (kept until deleted).
+    // Ids use "_" because sanitizeId() only accepts [A-Za-z0-9_-]. planKey 'g' = General.
     const PLAN_SLOT_IDS = ['morning', 'noon', 'evening', 'bedtime'];
     const PLAN_SLOT_DEFAULTS = {
       morning: { label: 'Morning', time: '08:00' }, noon: { label: 'Noon', time: '12:00' },
@@ -2781,16 +2800,22 @@
     const PLAN_MEALS = { any: '', before: 'before meal', with: 'with meal', after: 'after meal', empty: 'empty stomach' };
     const PLAN_ICONS = ['💊', '💉', '🧴', '🌿', '🍊', '🐟', '🥛', '🧪', '🩹', '🫀', '🦴', '👁️'];
     const PLAN_COLORS = ['teal', 'blue', 'purple', 'pink', 'red', 'orange', 'yellow', 'green'];
+    const PLAN_INTERVAL_PRESETS = [4, 6, 8, 12, 24];
+    const PLAN_SKIP_REASONS = ['Vomited', 'Ran out', 'Forgot', 'Side effect', 'Other'];
     const PLAN_KEEP_DAYS = 90;
+    const PLAN_NOTE_MAX = 140;
     const PLAN_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
     const PLAN_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-    let editingPlanItemId = null;
-    let planDraft = { icon: PLAN_ICONS[0], color: PLAN_COLORS[0] };
+    const PLAN_CLICK_SELECTOR = ['toggle', 'skip', 'take', 'skip-iv', 'asneeded', 'undo', 'add', 'add-in', 'edit', 'up', 'down', 'stop', 'resume',
+      'archive', 'settings', 'open-tab', 'view', 'new-plan', 'edit-plan', 'stop-plan', 'resume-plan', 'start-course', 'open-record', 'add-doc']
+      .map(k => `[data-plan-${k}]`).concat(['[data-pick-icon]', '[data-pick-color]', '[data-pick-hours]', '[data-cal-day]', '[data-cal-nav]', '[data-skip-reason]']).join(',');
+    let editingPlanItemId = null, editingPlanId = null, planDayDate = null, pendingSkip = null, pendingRecordPlanId = null;
+    let planDraft = { icon: PLAN_ICONS[0], color: PLAN_COLORS[0], skipReason: '' };
+    let planView = 'list';
+    const planCal = { ym: null, filter: 'all' };
 
-    // ---- local-calendar date helpers (the existing code mostly uses UTC dates; a dose taken at
-    // 07:00 in UTC+8 must still count as "today", so the plan always uses the local calendar) ----
+    // ---- local-calendar date helpers (localDateStr() is defined near the top of this file) ----
     function pad2(n) { return String(n).padStart(2, '0'); }
-    function localDateStr(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
     function localTimeStr(d) { d = d || new Date(); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
     function addDaysStr(dateStr, n) { const [y, m, d] = dateStr.split('-').map(Number); return localDateStr(new Date(y, m - 1, d + n)); }
     function daysBetween(fromStr, toStr) {
@@ -2813,6 +2838,18 @@
       const h = Math.floor(min / 60);
       return h < 48 ? h + ' h ago' : Math.floor(h / 24) + ' d ago';
     }
+    function fmtDur(ms) {
+      const min = Math.max(0, Math.round(ms / 60000));
+      if (min < 60) return min + ' min';
+      const h = Math.floor(min / 60), r = min % 60;
+      return r ? `${h} h ${r} min` : `${h} h`;
+    }
+    function fmtDue(ms) {
+      const d = new Date(ms), ds = localDateStr(d), today = localDateStr();
+      const t = localTimeStr(d);
+      if (ds === today) return t;
+      return ds === addDaysStr(today, 1) ? 'tomorrow ' + t : ds.slice(5) + ' ' + t;
+    }
 
     // ---- reading the plan ----
     function getCurMember() { return members.find(x => x.id === currentMemberId); }
@@ -2827,13 +2864,31 @@
       });
       return out;
     }
+    function livePlans(m) {
+      return live(m.plans).slice().sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')) || String(a.name).localeCompare(String(b.name)));
+    }
+    function findPlan(m, id) { return id ? (m.plans || []).find(p => p.id === id && !p.deletedAt) || null : null; }
+    function planKeyOf(it) { return it.planId || 'g'; }
+    function planNameOfKey(m, key) {
+      if (key === 'g') return 'General';
+      const p = (m.plans || []).find(x => x.id === key);
+      return p ? p.name + (p.deletedAt ? ' (deleted)' : '') : 'Removed plan';
+    }
+    function effStart(m, it) { const p = findPlan(m, it.planId); return it.startDate || (p && p.startDate) || ''; }
+    function effEnd(m, it) { const p = findPlan(m, it.planId); return it.endDate || (p && p.endDate) || ''; }
     function planItemIsAsNeeded(it) { return !!(it.schedule && it.schedule.mode === 'asNeeded'); }
+    function planItemIsInterval(it) { return !!(it.schedule && it.schedule.mode === 'interval'); }
+    function planIntervalHours(it) {
+      const h = Number(it.schedule && it.schedule.everyHours);
+      return Number.isFinite(h) && h >= 1 && h <= 72 ? h : 8;
+    }
     function planItemSlots(it) {
       const sc = it.schedule || {};
       return sc.mode === 'slots' && Array.isArray(sc.slots) ? PLAN_SLOT_IDS.filter(s => sc.slots.includes(s)) : [];
     }
-    function planItemActiveOn(it, dateStr) {
-      return !it.deletedAt && (!it.startDate || it.startDate <= dateStr) && (!it.endDate || it.endDate >= dateStr);
+    function planItemActiveOn(m, it, dateStr) {
+      const s = effStart(m, it), e = effEnd(m, it);
+      return !it.deletedAt && (!s || s <= dateStr) && (!e || e >= dateStr);
     }
     function sortedPlanItems(m) {
       return live(m.planItems).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
@@ -2843,6 +2898,7 @@
     }
     function planWhenText(m, it) {
       if (planItemIsAsNeeded(it)) return 'As needed';
+      if (planItemIsInterval(it)) return `Every ${planIntervalHours(it)} h`;
       const slots = planItemSlots(it);
       if (!slots.length) return 'No time set';
       const st = getPlanSettings(m);
@@ -2855,43 +2911,145 @@
       (m.intakeLog || []).forEach(e => { if (!e.deletedAt && e.itemId === itemId && e.status === 'taken' && e.takenAt && e.takenAt > best) best = e.takenAt; });
       return best;
     }
+    function planTagHtml(m, it) { const p = findPlan(m, it.planId); return p ? ` <span class="plan-tag">${escapeHtml(p.name)}</span>` : ''; }
 
-    function buildDayPlan(m, dateStr) {
-      const items = sortedPlanItems(m).filter(it => planItemActiveOn(it, dateStr));
-      const groups = [];
-      const st = getPlanSettings(m);
+    // ---- interval dosing: the clock is re-anchored on every dose actually taken ----
+    function intervalEntries(m, itemId) { return (m.intakeLog || []).filter(e => !e.deletedAt && e.itemId === itemId && !e.slot); }
+    function entryAnchorMs(e) { return Date.parse(e.status === 'taken' ? e.takenAt : e.dueAt); }
+    // taken -> counts from when it was really taken; skipped/missed -> keep the old rhythm (count from when it was due)
+    function intervalNextDueMs(m, it) {
+      let best = NaN;
+      intervalEntries(m, it.id).forEach(e => { const a = entryAnchorMs(e); if (Number.isFinite(a) && (!Number.isFinite(best) || a > best)) best = a; });
+      if (Number.isFinite(best)) return best + planIntervalHours(it) * 3600e3;
+      const f = Date.parse(it.schedule && it.schedule.firstDueAt);
+      return Number.isFinite(f) ? f : null;
+    }
+    function intervalLiveState(m, it, nowMs) {
+      if (!planItemActiveOn(m, it, localDateStr(new Date(nowMs)))) return null;
+      const due = intervalNextDueMs(m, it);
+      if (due == null) return null;
+      const end = effEnd(m, it);
+      if (end && localDateStr(new Date(due)) > end) return { done: true };
+      return { dueMs: due, lateMs: Math.max(0, nowMs - due) };
+    }
+    // two devices logging the same dose: show one (they are within 10 minutes of each other)
+    function dedupeNear(entries) {
+      const out = []; let lastT = -1e15;
+      entries.forEach(e => {
+        if (e.status !== 'taken') { out.push(e); return; }
+        const t = Date.parse(e.takenAt);
+        if (Number.isFinite(t) && Math.abs(t - lastT) < 600000) return;
+        lastT = t; out.push(e);
+      });
+      return out;
+    }
+
+    function buildDayPlan(m, dateStr, nowMs) {
+      const items = sortedPlanItems(m).filter(it => planItemActiveOn(m, it, dateStr));
+      const groups = [], st = getPlanSettings(m);
       PLAN_SLOT_IDS.forEach(slot => {
         const rows = items.filter(it => planItemSlots(it).includes(slot)).map(it => ({
           item: it, slot, entry: findLiveIntake(m, makeIntakeId(it.id, dateStr, slot)), due: planDueTime(m, it, slot)
         }));
         if (rows.length) groups.push({ slot, label: st.slotLabels[slot], time: st.slotTimes[slot], rows });
       });
+      const intervals = items.filter(planItemIsInterval).map(it => {
+        const entries = dedupeNear(intervalEntries(m, it.id).filter(e => e.date === dateStr).sort((a, b) => (entryAnchorMs(a) || 0) - (entryAnchorMs(b) || 0)));
+        return { item: it, entries, live: intervalLiveState(m, it, nowMs) };
+      }).sort((a, b) => ((a.live && a.live.dueMs) || 9e15) - ((b.live && b.live.dueMs) || 9e15));
       const asNeeded = items.filter(planItemIsAsNeeded).map(it => ({
         item: it,
-        doses: (m.intakeLog || []).filter(e => !e.deletedAt && e.itemId === it.id && e.date === dateStr && !e.slot && e.status === 'taken')
-                 .sort((a, b) => String(a.takenAt).localeCompare(String(b.takenAt))),
+        doses: intervalEntries(m, it.id).filter(e => e.date === dateStr && e.status === 'taken').sort((a, b) => String(a.takenAt).localeCompare(String(b.takenAt))),
         last: lastTakenIso(m, it.id)
       }));
-      return { groups, asNeeded };
+      return { groups, intervals, asNeeded };
     }
 
-    // taken / expected over the last `days` COMPLETED days (today excluded - its slots are still pending)
+    // taken / expected over the last `days` COMPLETED days (slot items only)
     function planAdherence(m, it, days) {
-      if (planItemIsAsNeeded(it)) return null;
+      if (planItemIsAsNeeded(it) || planItemIsInterval(it)) return null;
       const slots = planItemSlots(it).length;
       let expected = 0, taken = 0;
       const today = localDateStr();
       for (let i = 1; i <= days; i++) {
         const d = addDaysStr(today, -i);
-        if (!planItemActiveOn(it, d)) continue;
+        if (!planItemActiveOn(m, it, d)) continue;
         expected += slots;
         planItemSlots(it).forEach(s => { const e = findLiveIntake(m, makeIntakeId(it.id, d, s)); if (e && e.status === 'taken') taken++; });
       }
       return expected ? { taken, expected } : null;
     }
 
-    // ---- rendering ----
-    function renderPlanRow(row, today, nowT) {
+    // ---- one day, all plans: the single source for the calendar, the day sheet and the roll-up ----
+    // Returns { planKey: {taken, skipped, missed, items:[{it, taken, skipped, missed, entries}], source} }.
+    // 'missed' = a skipped-by-silence dose: a slot with no entry on a past day, an interval day with
+    // no doses at all, or an explicit auto-filled 'missed' entry. forceLog=true ignores roll-ups (used when folding).
+    function computeDay(m, date, forceLog) {
+      const today = localDateStr(), byPlan = {};
+      const bucket = k => byPlan[k] || (byPlan[k] = { taken: 0, skipped: 0, missed: 0, items: [], source: 'log' });
+      const rolls = live(m.dayRollups).filter(r => r.date === date);
+      const cleared = new Set(rolls.filter(r => r.cleared).map(r => r.planKey));
+      if (!forceLog && date < intakeCutoffDate()) {
+        rolls.forEach(r => { if (r.cleared) return; const b = bucket(r.planKey); b.taken += r.taken || 0; b.skipped += r.skipped || 0; b.missed += r.missed || 0; b.source = 'rollup'; });
+        return byPlan;
+      }
+      (m.planItems || []).forEach(it => {
+        const key = planKeyOf(it);
+        if (cleared.has(key)) return;
+        const plan = findPlan(m, it.planId);
+        const tracked = (!plan || !plan.trackFrom || date >= plan.trackFrom);
+        const act = planItemActiveOn(m, it, date) && tracked && date < today;
+        let taken = 0, skipped = 0, missed = 0, entries = [];
+        if (planItemIsAsNeeded(it)) {
+          entries = intervalEntries(m, it.id).filter(e => e.date === date && e.status === 'taken');
+        } else if (planItemIsInterval(it)) {
+          entries = intervalEntries(m, it.id).filter(e => e.date === date).sort((a, b) => (entryAnchorMs(a) || 0) - (entryAnchorMs(b) || 0));
+          entries.forEach(e => { if (e.status === 'taken') taken++; else if (e.status === 'skipped') skipped++; else missed++; });
+          if (!entries.length && act) missed += Math.max(1, Math.round(24 / planIntervalHours(it)));
+        } else {
+          planItemSlots(it).forEach(s => {
+            const e = findLiveIntake(m, makeIntakeId(it.id, date, s));
+            if (e) { entries.push(e); if (e.status === 'taken') taken++; else skipped++; } else if (act) missed++;
+          });
+        }
+        if (taken || skipped || missed || entries.length) {
+          const b = bucket(key);
+          b.taken += taken; b.skipped += skipped; b.missed += missed;
+          b.items.push({ it, taken, skipped, missed, entries });
+        }
+      });
+      return byPlan;
+    }
+    function dayStatusOf(taken, bad) { return taken > 0 && bad === 0 ? 'ok' : taken > 0 ? 'partial' : bad > 0 ? 'missed' : 'none'; }
+
+    function dayNoteId(key, date) { return key + '_' + date; }
+    function findDayNote(m, key, date) { return (m.dayNotes || []).find(n => n.id === dayNoteId(key, date)) || null; }
+    function setDayNote(m, key, date, text) {
+      text = String(text || '').trim().slice(0, PLAN_NOTE_MAX);
+      const ex = findDayNote(m, key, date);
+      if (ex) {
+        if (!text) { if (!ex.deletedAt) tombstone(ex); return; }
+        if (ex.text === text && !ex.deletedAt) return;
+        ex.text = text; ex.deletedAt = null; bumpVersion(ex);
+      } else if (text) {
+        if (!m.dayNotes) m.dayNotes = [];
+        m.dayNotes.push(Object.assign({ id: dayNoteId(key, date), planKey: key, date, text }, freshSyncMeta()));
+      }
+    }
+    function appendDayNote(m, key, date, line) {
+      const ex = findDayNote(m, key, date);
+      const cur = ex && !ex.deletedAt ? ex.text : '';
+      setDayNote(m, key, date, (cur ? cur + '; ' : '') + line);
+    }
+    function upsertClearedRollup(m, key, date) {
+      if (!m.dayRollups) m.dayRollups = [];
+      const id = key + '_' + date, ex = m.dayRollups.find(r => r.id === id);
+      if (ex) { Object.assign(ex, { taken: 0, skipped: 0, missed: 0, cleared: true, deletedAt: null }); bumpVersion(ex); }
+      else m.dayRollups.push(Object.assign({ id, planKey: key, date, taken: 0, skipped: 0, missed: 0, cleared: true }, freshSyncMeta()));
+    }
+
+    // ---- rendering: Today ----
+    function renderPlanRow(m, row, today, nowT) {
       const it = row.item, e = row.entry;
       const state = e ? e.status : 'pending';
       const attrs = `data-item="${escapeHtml(it.id)}" data-slot="${row.slot}" data-date="${today}"`;
@@ -2910,43 +3068,81 @@
           <button type="button" class="plan-check${state === 'taken' ? ' on' : ''}" data-plan-toggle ${attrs} aria-label="${escapeHtml(label)}" aria-pressed="${state !== 'pending'}">${state === 'taken' ? '✓' : state === 'skipped' ? '–' : ''}</button>
           <span class="plan-ico">${escapeHtml(it.icon)}</span>
           <div class="plan-main">
-            <div class="plan-name">${escapeHtml(it.name)}</div>
+            <div class="plan-name">${escapeHtml(it.name)}${planTagHtml(m, it)}</div>
             <div class="plan-sub">${escapeHtml(planSubText(it))}${it.note ? ` <span class="plan-note">${escapeHtml(it.note)}</span>` : ''}</div>
           </div>
           <div class="plan-right">${right}</div>
         </div>`;
     }
 
+    function doseChipsHtml(entries) {
+      return entries.map(d => {
+        const id = escapeHtml(d.id);
+        if (d.status === 'taken') return `<span class="plan-dose"><input type="time" class="plan-time-input" data-plan-takentime data-entry-id="${id}" value="${escapeHtml(isoToLocalTime(d.takenAt))}" aria-label="Time taken"><button type="button" class="plan-dose-x" data-plan-undo data-entry-id="${id}" aria-label="Remove this dose">×</button></span>`;
+        if (d.status === 'skipped') return `<span class="plan-dose"><span class="tag">Skipped ${escapeHtml(isoToLocalTime(d.dueAt))}</span><button type="button" class="plan-dose-x" data-plan-undo data-entry-id="${id}" aria-label="Remove this skipped dose">×</button></span>`;
+        return `<span class="plan-dose"><span class="plan-missed">Missed ${escapeHtml(isoToLocalTime(d.dueAt))}</span></span>`;
+      }).join('');
+    }
+
+    function renderIntervalBlock(m, b) {
+      const it = b.item, live_ = b.live && !b.live.done ? b.live : null;
+      let right = '';
+      if (live_) {
+        right = live_.lateMs > 0
+          ? `<span class="tag tag-yellow">Due ${fmtDue(live_.dueMs)}${live_.lateMs >= 1800000 ? ' · ' + fmtDur(live_.lateMs) + ' late' : ''}</span><button type="button" class="plan-skip" data-plan-skip-iv data-item="${escapeHtml(it.id)}">Skip</button>`
+          : `<span class="plan-due">Next ${fmtDue(live_.dueMs)}</span>`;
+      } else if (b.live && b.live.done) right = '<span class="tag tag-green">Course complete</span>';
+      return `
+        <div class="plan-row plan-c-${it.color}${live_ && live_.lateMs > 0 ? ' plan-pending' : ''}">
+          ${live_ ? `<button type="button" class="plan-check" data-plan-take data-item="${escapeHtml(it.id)}" aria-label="Take ${escapeHtml(it.name)} now"></button>` : ''}
+          <span class="plan-ico">${escapeHtml(it.icon)}</span>
+          <div class="plan-main">
+            <div class="plan-name">${escapeHtml(it.name)}${planTagHtml(m, it)}</div>
+            <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}every ${planIntervalHours(it)} h${it.note ? ` <span class="plan-note">${escapeHtml(it.note)}</span>` : ''}</div>
+            ${b.entries.length ? `<div class="plan-doses">${doseChipsHtml(b.entries)}</div>` : ''}
+          </div>
+          <div class="plan-right">${right}</div>
+        </div>`;
+    }
+
     function renderPlanToday(m) {
-      const today = localDateStr(), nowT = localTimeStr();
+      const today = localDateStr(), nowT = localTimeStr(), nowMs = Date.now();
       if (!live(m.planItems).length) {
         return `
         <div class="card">
           <div class="card-title">💊 Today</div>
           <p class="s-9155c939">No daily plan yet - add the supplements and medicines to take each day.</p>
-          <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add to Daily Plan</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add medicine</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-plan-new-plan>+ New plan</button>
         </div>`;
       }
-      const plan = buildDayPlan(m, today);
+      const plan = buildDayPlan(m, today, nowMs);
       let total = 0, taken = 0, skipped = 0;
       plan.groups.forEach(g => g.rows.forEach(r => { total++; if (r.entry) { if (r.entry.status === 'taken') taken++; else skipped++; } }));
-      const progress = total ? `${taken} / ${total} taken${skipped ? ` · ${skipped} skipped` : ''}` : '';
+      plan.intervals.forEach(b => {
+        b.entries.forEach(e => { total++; if (e.status === 'taken') taken++; else skipped++; });
+        if (b.live && !b.live.done && b.live.lateMs > 0) total++;
+      });
+      const progress = total ? `${taken} / ${total} taken${skipped ? ` · ${skipped} skipped/missed` : ''}` : '';
       const groupsHtml = plan.groups.map(g => `
         <div class="plan-group-title">${escapeHtml(g.label)} <span class="plan-group-time">${g.time}</span></div>
-        ${g.rows.map(r => renderPlanRow(r, today, nowT)).join('')}`).join('');
+        ${g.rows.map(r => renderPlanRow(m, r, today, nowT)).join('')}`).join('');
+      const intervalHtml = plan.intervals.length ? `
+        <div class="plan-group-title">Every N hours</div>
+        ${plan.intervals.map(b => renderIntervalBlock(m, b)).join('')}` : '';
       const asNeededHtml = plan.asNeeded.length ? `
         <div class="plan-group-title">As needed</div>
         ${plan.asNeeded.map(a => `
           <div class="plan-row plan-c-${a.item.color}">
             <span class="plan-ico">${escapeHtml(a.item.icon)}</span>
             <div class="plan-main">
-              <div class="plan-name">${escapeHtml(a.item.name)}</div>
+              <div class="plan-name">${escapeHtml(a.item.name)}${planTagHtml(m, a.item)}</div>
               <div class="plan-sub">${escapeHtml(planSubText(a.item))}${a.last ? ` <span class="plan-note">Last: ${escapeHtml(fmtAgo(a.last))}</span>` : ''}</div>
-              ${a.doses.length ? `<div class="plan-doses">${a.doses.map(d => `
-                <span class="plan-dose"><input type="time" class="plan-time-input" data-plan-takentime data-entry-id="${escapeHtml(d.id)}" value="${escapeHtml(isoToLocalTime(d.takenAt))}" aria-label="Time taken"><button type="button" class="plan-dose-x" data-plan-undo data-entry-id="${escapeHtml(d.id)}" aria-label="Remove this dose">×</button></span>`).join('')}</div>` : ''}
+              ${a.doses.length ? `<div class="plan-doses">${doseChipsHtml(a.doses)}</div>` : ''}
             </div>
             <div class="plan-right"><button type="button" class="btn btn-secondary btn-sm" data-plan-asneeded data-item="${escapeHtml(a.item.id)}">+ Log dose</button></div>
           </div>`).join('')}` : '';
+      const body = groupsHtml + intervalHtml + asNeededHtml;
       return `
         <div class="card">
           <div class="card-title plan-title">💊 Today <span class="plan-progress">${progress}</span>
@@ -2954,87 +3150,214 @@
               <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add</button>
               <button type="button" class="btn btn-secondary btn-sm" data-plan-open-tab>Manage plan</button>
             </span></div>
-          ${groupsHtml || asNeededHtml ? groupsHtml + asNeededHtml : '<p class="s-9155c939">Nothing scheduled for today.</p>'}
+          ${body || '<p class="s-9155c939">Nothing scheduled for today.</p>'}
         </div>`;
     }
 
+    // ---- rendering: Plan tab (list) ----
     function monthLabel(ym) {
       const [y, mo] = ym.split('-').map(Number);
       return new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
     }
+    function planDateRange(a, b) { return a ? (b ? `${a} → ${b}` : `from ${a}`) : (b ? `until ${b}` : ''); }
 
-    function renderPlanTab(m) {
-      const today = localDateStr();
-      const all = sortedPlanItems(m);
-      const active = all.filter(it => !it.endDate || it.endDate >= today);
-      const ended = all.filter(it => it.endDate && it.endDate < today);
-      const itemRow = (it, idx, n) => {
-        const adh = planAdherence(m, it, 7);
-        const upcoming = it.startDate && it.startDate > today;
-        return `
-        <div class="plan-row plan-c-${it.color}">
+    function renderPlanItemRow(m, it, idx, n) {
+      const adh = planAdherence(m, it, 7), today = localDateStr();
+      const s = effStart(m, it), e = effEnd(m, it);
+      const upcoming = s && s > today, ended = e && e < today;
+      return `
+        <div class="plan-row plan-c-${it.color}${ended ? ' plan-ended' : ''}">
           <span class="plan-ico">${escapeHtml(it.icon)}</span>
           <div class="plan-main">
-            <div class="plan-name">${escapeHtml(it.name)} <span class="tag">${it.kind === 'medication' ? 'Medication' : 'Supplement'}</span>${upcoming ? ` <span class="tag tag-yellow">Starts ${escapeHtml(it.startDate)}</span>` : ''}</div>
+            <div class="plan-name">${escapeHtml(it.name)} <span class="tag">${it.kind === 'medication' ? 'Medication' : 'Supplement'}</span>${upcoming ? ` <span class="tag tag-yellow">Starts ${escapeHtml(s)}</span>` : ''}${ended ? ` <span class="tag">Ended ${escapeHtml(e)}</span>` : ''}${it.archivedRecordId ? ' <span class="tag tag-green">In records</span>' : ''}</div>
             <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}${escapeHtml(planWhenText(m, it))}${adh ? ` · ${adh.taken}/${adh.expected} last 7 days` : ''}</div>
             ${it.note ? `<div class="plan-sub">${escapeHtml(it.note)}</div>` : ''}
           </div>
           <div class="plan-actions">
-            <button type="button" class="plan-icon-btn" data-plan-up="${escapeHtml(it.id)}" aria-label="Move up"${idx === 0 ? ' disabled' : ''}>↑</button>
-            <button type="button" class="plan-icon-btn" data-plan-down="${escapeHtml(it.id)}" aria-label="Move down"${idx === n - 1 ? ' disabled' : ''}>↓</button>
+            ${ended ? '' : `<button type="button" class="plan-icon-btn" data-plan-up="${escapeHtml(it.id)}" aria-label="Move up"${idx === 0 ? ' disabled' : ''}>↑</button>
+            <button type="button" class="plan-icon-btn" data-plan-down="${escapeHtml(it.id)}" aria-label="Move down"${idx === n - 1 ? ' disabled' : ''}>↓</button>`}
             <button type="button" class="btn btn-secondary btn-sm" data-plan-edit="${escapeHtml(it.id)}">Edit</button>
-            <button type="button" class="btn btn-secondary btn-sm" data-plan-stop="${escapeHtml(it.id)}">Stop</button>
+            ${ended ? `<button type="button" class="btn btn-secondary btn-sm" data-plan-resume="${escapeHtml(it.id)}">Resume</button>${it.archivedRecordId ? '' : `<button type="button" class="btn btn-secondary btn-sm" data-plan-archive="${escapeHtml(it.id)}">Save to records</button>`}`
+                    : `<button type="button" class="btn btn-secondary btn-sm" data-plan-stop="${escapeHtml(it.id)}">Stop</button>`}
           </div>
         </div>`;
-      };
-      const endedRow = it => `
-        <div class="plan-row plan-c-${it.color} plan-ended">
-          <span class="plan-ico">${escapeHtml(it.icon)}</span>
-          <div class="plan-main">
-            <div class="plan-name">${escapeHtml(it.name)} <span class="tag">Ended ${escapeHtml(it.endDate)}</span>${it.archivedRecordId ? ' <span class="tag tag-green">In records</span>' : ''}</div>
-            <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}${escapeHtml(planWhenText(m, it))}</div>
-          </div>
-          <div class="plan-actions">
-            <button type="button" class="btn btn-secondary btn-sm" data-plan-edit="${escapeHtml(it.id)}">Edit</button>
-            <button type="button" class="btn btn-secondary btn-sm" data-plan-resume="${escapeHtml(it.id)}">Resume</button>
-            ${it.archivedRecordId ? '' : `<button type="button" class="btn btn-secondary btn-sm" data-plan-archive="${escapeHtml(it.id)}">Save to records</button>`}
-          </div>
+    }
+
+    function renderPlanCard(m, p) {
+      const today = localDateStr();
+      const its = sortedPlanItems(m).filter(i => i.planId === p.id);
+      const act = its.filter(i => { const e = effEnd(m, i); return !e || e >= today; });
+      const ended = !!(p.endDate && p.endDate < today);
+      const docs = live(m.records).filter(r => r.planId === p.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      const canStart = its.some(i => planItemIsInterval(i) && !i.deletedAt && !intervalEntries(m, i.id).length && !(effEnd(m, i) && effEnd(m, i) < today));
+      return `
+        <div class="card plan-card${ended ? ' plan-ended' : ''}">
+          <div class="card-title plan-title">${escapeHtml(p.name)}
+            <span class="tag${ended ? '' : ' tag-green'}">${ended ? 'Ended' : 'Active'}</span>
+            <span class="plan-manage">
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-add-in="${escapeHtml(p.id)}">+ Medicine</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-edit-plan="${escapeHtml(p.id)}">Edit</button>
+              ${ended ? `<button type="button" class="btn btn-secondary btn-sm" data-plan-resume-plan="${escapeHtml(p.id)}">Resume</button>`
+                      : `<button type="button" class="btn btn-secondary btn-sm" data-plan-stop-plan="${escapeHtml(p.id)}">Stop plan</button>`}
+            </span></div>
+          <div class="plan-sub">${escapeHtml(planDateRange(p.startDate, p.endDate))}${p.note ? ` · ${escapeHtml(p.note)}` : ''}</div>
+          ${canStart && !ended ? `<div class="plan-start-row"><button type="button" class="btn btn-primary btn-sm" data-plan-start-course="${escapeHtml(p.id)}">▶ Start course now</button> <span class="plan-sub">Starts the every-N-hours clock from this moment.</span></div>` : ''}
+          ${its.length ? its.map(i => renderPlanItemRow(m, i, act.indexOf(i), act.length)).join('') : '<p class="s-9155c939">No medicines yet - tap “+ Medicine”.</p>'}
+          <details class="plan-earlier">
+            <summary>📎 Documents (${docs.length})</summary>
+            ${docs.map(r => `<div class="plan-sub plan-doc"><button type="button" class="plan-link" data-plan-open-record="${escapeHtml(r.id)}">${escapeHtml(r.date)} · ${escapeHtml(r.title)}</button></div>`).join('')}
+            <button type="button" class="btn btn-secondary btn-sm" data-plan-add-doc="${escapeHtml(p.id)}">+ Add receipt / report</button>
+          </details>
         </div>`;
+    }
+
+    function renderPlanList(m) {
+      const plans = livePlans(m), today = localDateStr();
+      const isEnded = p => !!(p.endDate && p.endDate < today);
+      const general = sortedPlanItems(m).filter(i => !i.planId || !findPlan(m, i.planId));
+      const gAct = general.filter(i => { const e = effEnd(m, i); return !e || e >= today; });
+      const generalCard = (general.length || !plans.length) ? `
+        <div class="card plan-card">
+          <div class="card-title plan-title">General
+            <span class="plan-manage"><button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Medicine</button></span></div>
+          ${general.length ? general.map(i => renderPlanItemRow(m, i, gAct.indexOf(i), gAct.length)).join('') : '<p class="s-9155c939">Nothing in the plan yet.</p>'}
+        </div>` : '';
       const summaries = (m.intakeSummaries || []).slice().sort((a, b) => (a.month < b.month ? 1 : a.month > b.month ? -1 : 0));
       const nameOf = id => { const it = (m.planItems || []).find(x => x.id === id); return it ? it.name : 'Removed item'; };
-      return `
-        <div class="card">
-          <div class="card-title plan-title">💊 Daily Plan
-            <span class="plan-manage">
-              <button type="button" class="btn btn-secondary btn-sm" data-plan-settings>⏱ Time slots</button>
-              <button type="button" class="btn btn-primary btn-sm" data-plan-add>+ Add</button>
-            </span></div>
-          ${active.length ? active.map((it, i) => itemRow(it, i, active.length)).join('') : '<p class="s-9155c939">Nothing in the plan yet.</p>'}
-        </div>
-        ${ended.length ? `<div class="card"><div class="card-title">Ended</div>${ended.map(endedRow).join('')}</div>` : ''}
-        ${summaries.length ? `
+      return plans.filter(p => !isEnded(p)).map(p => renderPlanCard(m, p)).join('')
+        + generalCard
+        + plans.filter(isEnded).map(p => renderPlanCard(m, p)).join('')
+        + (summaries.length ? `
         <div class="card">
           <details class="plan-earlier">
             <summary>Earlier months (${summaries.length})</summary>
             ${summaries.map(s => `<div class="plan-sub">${escapeHtml(monthLabel(s.month))} · ${escapeHtml(nameOf(s.itemId))}: ${s.taken}${s.expected != null ? ' / ' + s.expected : ''} taken${s.skipped ? `, ${s.skipped} skipped` : ''}</div>`).join('')}
           </details>
-          <p class="plan-sub">Detailed logs are kept for ${PLAN_KEEP_DAYS} days, then folded into these monthly totals.</p>
-        </div>` : ''}`;
+        </div>` : '');
+    }
+
+    // ---- rendering: calendar ----
+    function calendarKeys(m) {
+      const keys = new Set(['g']);
+      (m.plans || []).forEach(p => keys.add(p.id));
+      (m.planItems || []).forEach(i => keys.add(planKeyOf(i)));
+      live(m.dayRollups).forEach(r => keys.add(r.planKey));
+      live(m.dayNotes).forEach(n => keys.add(n.planKey));
+      return Array.from(keys);
+    }
+    function calDayInfo(m, date, filter) {
+      const today = localDateStr(), parts = computeDay(m, date);
+      let taken = 0, bad = 0;
+      Object.keys(parts).forEach(k => { if (filter === 'all' || k === filter) { taken += parts[k].taken; bad += parts[k].skipped + parts[k].missed; } });
+      const isToday = date === today;
+      let status = dayStatusOf(taken, bad);
+      if (isToday && bad === 0) status = 'none';                  // today is still in progress
+      const hasNote = live(m.dayNotes).some(n => n.date === date && (filter === 'all' || n.planKey === filter));
+      const hasDocs = live(m.records).some(r => r.date === date && (filter === 'all' ? (r.planId || live(r.attachments).length) : r.planId === filter));
+      const upcoming = date > today && (m.planItems || []).some(i => (filter === 'all' || planKeyOf(i) === filter) && planItemActiveOn(m, i, date));
+      return { status, taken, bad, hasNote, hasDocs, upcoming, isToday };
+    }
+
+    function renderPlanCalendar(m) {
+      const today = localDateStr();
+      if (!planCal.ym) planCal.ym = today.slice(0, 7);
+      const [y, mo] = planCal.ym.split('-').map(Number);
+      const days = new Date(y, mo, 0).getDate(), lead = (new Date(y, mo - 1, 1).getDay() + 6) % 7;
+      const keys = calendarKeys(m);
+      if (planCal.filter !== 'all' && !keys.includes(planCal.filter)) planCal.filter = 'all';
+      const cells = [];
+      for (let i = 0; i < lead; i++) cells.push('<span class="cal-blank"></span>');
+      for (let d = 1; d <= days; d++) {
+        const date = `${planCal.ym}-${pad2(d)}`, info = calDayInfo(m, date, planCal.filter);
+        const mark = info.status === 'ok' ? '✓' : info.status === 'partial' ? '◐' : info.status === 'missed' ? '✕' : '';
+        const word = info.status === 'ok' ? 'all taken' : info.status === 'partial' ? 'some missed' : info.status === 'missed' ? 'missed' : 'no record';
+        cells.push(`<button type="button" class="cal-cell cal-${info.status}${info.isToday ? ' cal-today' : ''}${info.upcoming ? ' cal-upcoming' : ''}" data-cal-day="${date}" aria-label="${date}: ${word}${info.hasNote ? ', has note' : ''}${info.hasDocs ? ', has documents' : ''}">
+          <span class="cal-num">${d}</span><span class="cal-mark">${mark}</span><span class="cal-extra">${info.hasNote ? '📝' : ''}${info.hasDocs ? '📎' : ''}</span></button>`);
+      }
+      return `
+        <div class="card">
+          <div class="cal-head">
+            <button type="button" class="plan-icon-btn" data-cal-nav="-1" aria-label="Previous month">‹</button>
+            <strong class="cal-title">${escapeHtml(monthLabel(planCal.ym))}</strong>
+            <button type="button" class="plan-icon-btn" data-cal-nav="1" aria-label="Next month">›</button>
+            <select class="form-select cal-filter" data-cal-filter aria-label="Filter by plan">
+              <option value="all"${planCal.filter === 'all' ? ' selected' : ''}>All plans</option>
+              ${keys.map(k => `<option value="${escapeHtml(k)}"${planCal.filter === k ? ' selected' : ''}>${escapeHtml(planNameOfKey(m, k))}</option>`).join('')}
+            </select>
+          </div>
+          <div class="cal-grid" role="grid">
+            ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(w => `<span class="cal-wd">${w}</span>`).join('')}
+            ${cells.join('')}
+          </div>
+          <div class="plan-sub cal-legend">✓ all taken · ◐ some missed or skipped · ✕ missed · 📝 note · 📎 document · dashed = planned</div>
+          <div class="plan-sub">Per-dose detail is kept ${PLAN_KEEP_DAYS} days; the day marks and notes stay until you delete them.</div>
+        </div>`;
+    }
+
+    function renderDaySheet(m, date) {
+      const filter = planCal.filter, parts = computeDay(m, date);
+      const keys = new Set(Object.keys(parts));
+      live(m.dayNotes).filter(n => n.date === date).forEach(n => keys.add(n.planKey));
+      if (filter !== 'all') keys.add(filter);
+      const shown = Array.from(keys).filter(k => filter === 'all' || k === filter);
+      const st = getPlanSettings(m);
+      const entryLine = (it, e) => {
+        if (e.slot) return `${escapeHtml(st.slotLabels[e.slot] || e.slot)}: ${e.status === 'taken' ? '✓ ' + escapeHtml(isoToLocalTime(e.takenAt)) : 'skipped'}`;
+        return e.status === 'taken' ? '✓ ' + escapeHtml(isoToLocalTime(e.takenAt)) : (e.status === 'skipped' ? 'skipped ' : 'missed ') + escapeHtml(isoToLocalTime(e.dueAt));
+      };
+      const sections = shown.map(k => {
+        const p = parts[k], note = findDayNote(m, k, date), noteText = note && !note.deletedAt ? note.text : '';
+        let body = '';
+        if (p && p.source === 'rollup') body = `<div class="plan-sub">${p.taken} taken${p.skipped ? `, ${p.skipped} skipped` : ''}${p.missed ? `, ${p.missed} missed` : ''} · per-dose detail was removed after ${PLAN_KEEP_DAYS} days</div>`;
+        else if (p) body = p.items.map(x => {
+          const lines = x.entries.map(e => entryLine(x.it, e));
+          const slotsMissing = planItemSlots(x.it).filter(s => !x.entries.some(e => e.slot === s) && date < localDateStr() && planItemActiveOn(m, x.it, date)).map(s => `${escapeHtml(st.slotLabels[s])}: missed`);
+          const ivMissing = (planItemIsInterval(x.it) && !x.entries.length && x.missed) ? ['no dose recorded'] : [];
+          return `<div class="plan-sub"><strong>${escapeHtml(x.it.icon)} ${escapeHtml(x.it.name)}</strong> ${escapeHtml(planSubText(x.it))} — ${lines.concat(slotsMissing, ivMissing).join(' · ') || '—'}</div>`;
+        }).join('');
+        if (!body) body = '<div class="plan-sub">No doses planned or recorded.</div>';
+        return `
+          <div class="plan-day-sec">
+            <div class="plan-group-title">${escapeHtml(planNameOfKey(m, k))}</div>
+            ${body}
+            <label class="form-label" for="dn_${escapeHtml(k)}">Note (optional, up to ${PLAN_NOTE_MAX} characters)</label>
+            <textarea class="form-input plan-note-input" id="dn_${escapeHtml(k)}" data-note-key="${escapeHtml(k)}" maxlength="${PLAN_NOTE_MAX}" rows="2" placeholder="e.g. vomited, retried at 9">${escapeHtml(noteText)}</textarea>
+          </div>`;
+      }).join('');
+      const recs = live(m.records).filter(r => r.date === date && (filter === 'all' || r.planId === filter));
+      return `
+        ${sections || '<p class="plan-sub">Nothing planned for this day.</p>'}
+        <div class="plan-group-title">Records &amp; documents</div>
+        ${recs.length ? recs.map(r => `<div class="plan-sub plan-doc"><button type="button" class="plan-link" data-plan-open-record="${escapeHtml(r.id)}">${escapeHtml(r.type)} · ${escapeHtml(r.title)}${live(r.attachments).length ? ' 📎' + live(r.attachments).length : ''}</button></div>`).join('') : '<div class="plan-sub">None on this day.</div>'}`;
+    }
+
+    function renderPlanTab(m) {
+      return `
+        <div class="card">
+          <div class="card-title plan-title">💊 Daily Plan
+            <span class="plan-manage">
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-settings>⏱ Time slots</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-plan-new-plan>+ Plan</button>
+              <button type="button" class="btn btn-primary btn-sm" data-plan-add>+ Medicine</button>
+            </span></div>
+          <div class="plan-seg" role="tablist">
+            <button type="button" role="tab" class="plan-seg-btn${planView === 'list' ? ' on' : ''}" data-plan-view="list" aria-selected="${planView === 'list'}">Plans</button>
+            <button type="button" role="tab" class="plan-seg-btn${planView === 'calendar' ? ' on' : ''}" data-plan-view="calendar" aria-selected="${planView === 'calendar'}">📅 Calendar</button>
+          </div>
+        </div>
+        ${planView === 'calendar' ? renderPlanCalendar(m) : renderPlanList(m)}`;
     }
 
     // ---- writing: one helper so every action saves + rolls back the same way ----
+    const PLAN_ARRAYS = ['planItems', 'intakeLog', 'intakeSummaries', 'plans', 'dayNotes', 'dayRollups'];
     function planCommit(m, mutate, opts) {
       opts = opts || {};
-      const snap = {
-        planItems: JSON.stringify(m.planItems || []), intakeLog: JSON.stringify(m.intakeLog || []),
-        intakeSummaries: JSON.stringify(m.intakeSummaries || []), planSettings: JSON.stringify(m.planSettings || null),
-        records: opts.records ? m.records.slice() : null
-      };
+      const snap = { planSettings: JSON.stringify(m.planSettings || null), records: opts.records ? m.records.slice() : null };
+      PLAN_ARRAYS.forEach(k => { snap[k] = JSON.stringify(m[k] || []); });
       mutate();
       compactMemberIntakeLog(m, intakeCutoffDate());
       if (!saveData()) {
-        m.planItems = JSON.parse(snap.planItems); m.intakeLog = JSON.parse(snap.intakeLog);
-        m.intakeSummaries = JSON.parse(snap.intakeSummaries);
+        PLAN_ARRAYS.forEach(k => { m[k] = JSON.parse(snap[k]); });
         const ps = JSON.parse(snap.planSettings); if (ps) m.planSettings = ps; else delete m.planSettings;
         if (snap.records) m.records = snap.records;
         return false;
@@ -3047,11 +3370,13 @@
       renderMain();
       if (main) main.scrollTop = st;
     }
+    function itemOf(m, id) { return (m.planItems || []).find(x => x.id === id); }
 
-    function togglePlanDose(itemId, slot, date, wantSkip) {
+    // ---- slot doses ----
+    function togglePlanDose(itemId, slot, date, wantSkip, reason) {
       const m = getCurMember();
       if (!m || !PLAN_SLOT_IDS.includes(slot) || !PLAN_DATE_RE.test(date)) return;
-      const id = makeIntakeId(itemId, date, slot);
+      const id = makeIntakeId(itemId, date, slot), it = itemOf(m, itemId);
       const ok = planCommit(m, () => {
         if (!m.intakeLog) m.intakeLog = [];
         const e = m.intakeLog.find(x => x.id === id);
@@ -3063,10 +3388,12 @@
         } else {
           m.intakeLog.push(Object.assign({ id, itemId, date, slot, status: wantSkip ? 'skipped' : 'taken', takenAt: wantSkip ? null : nowIso_ }, freshSyncMeta()));
         }
+        if (wantSkip && reason && it) appendDayNote(m, planKeyOf(it), date, `${it.name}: ${reason}`);
       });
       if (ok) planRerender();
     }
 
+    // ---- as-needed ----
     function logAsNeededDose(itemId) {
       const m = getCurMember();
       if (!m) return;
@@ -3077,13 +3404,53 @@
       if (ok) planRerender();
     }
 
+    // ---- every-N-hours ----
+    function takeIntervalDose(itemId) {
+      const m = getCurMember(), it = m && itemOf(m, itemId);
+      if (!it || it.deletedAt || !planItemIsInterval(it)) return;
+      const now = Date.now(), st = intervalLiveState(m, it, now);
+      if (!st || st.done) return;
+      const N = planIntervalHours(it) * 3600e3, due = st.dueMs;
+      if (due - now > 3600e3 && !confirm(`That's ${fmtDur(due - now)} before the next dose is due. Take it anyway?`)) return;
+      // Doses that came and went without being taken become explicit 'missed' entries; the dose now
+      // being taken satisfies the most recent due time and re-anchors the clock from the real time.
+      const j = now > due ? Math.min(200, Math.floor((now - due) / N)) : 0;
+      const takenId = freshId('in');
+      const ok = planCommit(m, () => {
+        if (!m.intakeLog) m.intakeLog = [];
+        for (let i = 0; i < j; i++) {
+          const d = due + i * N;
+          m.intakeLog.push(Object.assign({ id: freshId('in'), itemId, date: localDateStr(new Date(d)), slot: null, status: 'missed', takenAt: null, dueAt: new Date(d).toISOString(), fillFor: takenId }, freshSyncMeta()));
+        }
+        m.intakeLog.push(Object.assign({ id: takenId, itemId, date: localDateStr(new Date(now)), slot: null, status: 'taken', takenAt: new Date(now).toISOString(), dueAt: new Date(due + j * N).toISOString() }, freshSyncMeta()));
+      });
+      if (ok) planRerender();
+    }
+    function skipIntervalDose(itemId, reason) {
+      const m = getCurMember(), it = m && itemOf(m, itemId);
+      if (!it || it.deletedAt || !planItemIsInterval(it)) return;
+      const st = intervalLiveState(m, it, Date.now());
+      if (!st || st.done) return;
+      const date = localDateStr(new Date(st.dueMs));
+      const ok = planCommit(m, () => {
+        if (!m.intakeLog) m.intakeLog = [];
+        m.intakeLog.push(Object.assign({ id: freshId('in'), itemId, date, slot: null, status: 'skipped', takenAt: null, dueAt: new Date(st.dueMs).toISOString() }, freshSyncMeta()));
+        if (reason) appendDayNote(m, planKeyOf(it), date, `${it.name}: ${reason}`);
+      });
+      if (ok) planRerender();
+    }
+
     function undoIntakeEntry(entryId) {
       const m = getCurMember();
       const e = m && (m.intakeLog || []).find(x => x.id === entryId);
       if (!e) return;
-      if (planCommit(m, () => { tombstone(e); })) planRerender();
+      // an undone dose takes its auto-created 'missed' fillers with it, so the clock goes back to what it was
+      const ok = planCommit(m, () => {
+        tombstone(e);
+        (m.intakeLog || []).forEach(x => { if (!x.deletedAt && x.fillFor === entryId) tombstone(x); });
+      });
+      if (ok) planRerender();
     }
-
     function editIntakeTime(el) {
       const m = getCurMember();
       if (!m || !PLAN_TIME_RE.test(el.value || '')) return;
@@ -3093,12 +3460,31 @@
       if (planCommit(m, () => { e.takenAt = localDateTimeToIso(e.date, el.value); bumpVersion(e); })) planRerender();
     }
 
+    // ---- skip dialog (optional reason -> written into that day's note) ----
+    function openSkipModal(ctx) {
+      pendingSkip = ctx; planDraft.skipReason = '';
+      renderSkipChips();
+      document.getElementById('planSkipModal').classList.add('active');
+    }
+    function renderSkipChips() {
+      document.getElementById('planSkipChips').innerHTML = PLAN_SKIP_REASONS.map(r =>
+        `<button type="button" class="plan-pick plan-chip${planDraft.skipReason === r ? ' sel' : ''}" data-skip-reason="${r}">${r}</button>`).join('');
+    }
+    function closeSkipModal() { document.getElementById('planSkipModal').classList.remove('active'); pendingSkip = null; }
+    function confirmSkip() {
+      const c = pendingSkip; if (!c) return;
+      const reason = planDraft.skipReason;
+      closeSkipModal();
+      if (c.type === 'interval') skipIntervalDose(c.itemId, reason);
+      else togglePlanDose(c.itemId, c.slot, c.date, true, reason);
+    }
+
     function movePlanItem(id, dir) {
-      const m = getCurMember();
-      if (!m) return;
+      const m = getCurMember(), moved = m && itemOf(m, id);
+      if (!moved) return;
       const today = localDateStr();
       const all = sortedPlanItems(m);
-      const act = all.filter(it => !it.endDate || it.endDate >= today);
+      const act = all.filter(it => (it.planId || null) === (moved.planId || null) && (!effEnd(m, it) || effEnd(m, it) >= today));
       const i = act.findIndex(it => it.id === id), j = i + dir;
       if (i < 0 || j < 0 || j >= act.length) return;
       const ok = planCommit(m, () => {
@@ -3111,88 +3497,103 @@
     }
 
     // ---- Medication-record bridge: plan = "now", records = "history" ----
-    function archivePlanItemAsRecord(m, it) {
+    function archivePlanItemAsRecord(m, it, endShown) {
       if (it.archivedRecordId && live(m.records).some(r => r.id === it.archivedRecordId)) return false;
-      // an item stopped before its first dose has endDate < startDate: show just the start
-      const range = it.startDate ? ` · ${it.startDate}${(it.endDate && it.endDate >= it.startDate) ? ' → ' + it.endDate : ''}` : '';
+      const s = effStart(m, it), e = endShown || effEnd(m, it), p = findPlan(m, it.planId);
+      // an item stopped before its first dose has an end before its start: show just the start
+      const range = s ? ` · ${s}${(e && e >= s) ? ' → ' + e : ''}` : '';
       const rec = Object.assign({
-        id: freshId('r'), date: it.startDate || localDateStr(), type: 'Medication', title: it.name,
-        details: [planSubText(it), planWhenText(m, it)].filter(Boolean).join(', ') + range,
+        id: freshId('r'), date: s || localDateStr(), type: 'Medication', title: it.name,
+        details: [planSubText(it), planWhenText(m, it)].filter(Boolean).join(', ') + range + (p ? ` · ${p.name}` : ''),
         tags: ['daily-plan'], vitals: {}, attachments: []
       }, freshSyncMeta());
+      if (p) rec.planId = p.id;
       m.records.push(rec);
       it.archivedRecordId = rec.id;
       bumpVersion(it);
       return true;
     }
+    // "Stop" takes effect immediately: the course ends YESTERDAY, so it leaves Today and shows as Ended
+    // right away. Doses already logged today stay in the calendar (entries are counted even when the
+    // item is no longer active); only the saved Medication record shows today as the last day.
+    function endDateForStop() { return addDaysStr(localDateStr(), -1); }
 
     function stopPlanItem(id) {
-      const m = getCurMember();
-      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
-      if (!it) return;
+      const m = getCurMember(), it = m && itemOf(m, id);
+      if (!it || it.deletedAt) return;
       if (!confirm(`Stop "${it.name}"?\n\nIt moves to Ended and stops appearing in Today. Your history is kept.`)) return;
-      const today = localDateStr();
-      const tookToday = (m.intakeLog || []).some(e => !e.deletedAt && e.itemId === id && e.date === today && e.status === 'taken');
       const wantRecord = !it.archivedRecordId && confirm(`Also save "${it.name}" as a Medication record in this member's health records?\n\n(Dose, schedule and dates - it will show in the Medication List report.)`);
       const ok = planCommit(m, () => {
-        it.endDate = tookToday ? today : addDaysStr(today, -1);
+        it.endDate = endDateForStop();
         bumpVersion(it);
-        if (wantRecord) archivePlanItemAsRecord(m, it);
+        if (wantRecord) archivePlanItemAsRecord(m, it, localDateStr());
       }, { records: true });
       if (ok) planRerender();
     }
-
     function resumePlanItem(id) {
-      const m = getCurMember();
-      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
-      if (!it) return;
-      if (planCommit(m, () => { it.endDate = ''; bumpVersion(it); })) planRerender();
+      const m = getCurMember(), it = m && itemOf(m, id);
+      if (!it || it.deletedAt) return;
+      // clear the item's own end; if its plan has ended too, the item would stay ended, so resume the plan as well
+      if (planCommit(m, () => { it.endDate = ''; bumpVersion(it); const p = findPlan(m, it.planId); if (p && p.endDate) { p.endDate = ''; bumpVersion(p); } })) planRerender();
     }
-
     function archivePlanItemClick(id) {
-      const m = getCurMember();
-      const it = m && (m.planItems || []).find(x => x.id === id && !x.deletedAt);
-      if (!it) return;
+      const m = getCurMember(), it = m && itemOf(m, id);
+      if (!it || it.deletedAt) return;
       if (planCommit(m, () => { archivePlanItemAsRecord(m, it); }, { records: true })) planRerender();
     }
 
-    // ---- add / edit modal ----
+    // ---- add / edit medicine modal ----
     function renderPlanPickers() {
       document.getElementById('piIconPicker').innerHTML = PLAN_ICONS.map(ic =>
         `<button type="button" class="plan-pick${ic === planDraft.icon ? ' sel' : ''}" data-pick-icon="${ic}" aria-label="Icon ${ic}">${ic}</button>`).join('');
       document.getElementById('piColorPicker').innerHTML = PLAN_COLORS.map(c =>
         `<button type="button" class="plan-pick plan-swatch plan-c-${c}${c === planDraft.color ? ' sel' : ''}" data-pick-color="${c}" aria-label="Color ${c}"></button>`).join('');
+      const h = Number(document.getElementById('piHours').value);
+      document.getElementById('piHoursPicker').innerHTML = PLAN_INTERVAL_PRESETS.map(n =>
+        `<button type="button" class="plan-pick plan-chip${h === n ? ' sel' : ''}" data-pick-hours="${n}">${n} h</button>`).join('');
     }
     function updatePlanModeUi() {
-      const slotsMode = document.getElementById('piMode').value !== 'asNeeded';
-      document.getElementById('piSlotsWrap').classList.toggle('s-hidden', !slotsMode);
+      const mode = document.getElementById('piMode').value;
+      document.getElementById('piSlotsWrap').classList.toggle('s-hidden', mode !== 'slots');
+      document.getElementById('piIntervalWrap').classList.toggle('s-hidden', mode !== 'interval');
       const n = document.querySelectorAll('#piSlots input:checked').length;
       const t = document.getElementById('piTime');
-      t.disabled = !(slotsMode && n === 1);
+      t.disabled = !(mode === 'slots' && n === 1);
       if (t.disabled) t.value = '';
+      document.getElementById('piDateHint').textContent = document.getElementById('piPlan').value ? 'Leave a date blank to follow the plan’s dates.' : '';
+      renderPlanPickers();
     }
-    function openPlanItemModal(editId) {
+    function openPlanItemModal(editId, presetPlanId) {
       const m = getCurMember();
       if (!m) return;
       editingPlanItemId = editId || null;
-      const it = editId ? (m.planItems || []).find(x => x.id === editId) : null;
-      const st = getPlanSettings(m);
-      document.getElementById('planItemModalTitle').textContent = it ? 'Edit Daily Plan item' : 'Add to Daily Plan';
+      const it = editId ? itemOf(m, editId) : null;
+      const st = getPlanSettings(m), today = localDateStr();
+      document.getElementById('planItemModalTitle').textContent = it ? 'Edit medicine' : 'Add medicine';
       document.getElementById('piKind').value = it ? it.kind : 'supplement';
       document.getElementById('piName').value = it ? it.name : '';
       document.getElementById('piDose').value = it ? it.dose : '';
       document.getElementById('piMeal').value = it ? it.meal : 'any';
-      document.getElementById('piMode').value = it && planItemIsAsNeeded(it) ? 'asNeeded' : 'slots';
+      document.getElementById('piPlan').innerHTML = '<option value="">General (no plan)</option>' + livePlans(m).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+      document.getElementById('piPlan').value = it ? (it.planId || '') : (presetPlanId || '');
+      document.getElementById('piMode').value = it ? (planItemIsAsNeeded(it) ? 'asNeeded' : planItemIsInterval(it) ? 'interval' : 'slots') : 'slots';
       const chosen = it ? planItemSlots(it) : ['morning'];
       document.getElementById('piSlots').innerHTML = PLAN_SLOT_IDS.map(id =>
         `<label class="plan-slot-opt"><input type="checkbox" value="${id}"${chosen.includes(id) ? ' checked' : ''}> ${escapeHtml(st.slotLabels[id])} <span class="plan-group-time">${st.slotTimes[id]}</span></label>`).join('');
       document.getElementById('piTime').value = it ? (it.time || '') : '';
-      document.getElementById('piStart').value = it ? (it.startDate || '') : localDateStr();
+      document.getElementById('piHours').value = it && planItemIsInterval(it) ? planIntervalHours(it) : 8;
+      const first = it && planItemIsInterval(it) ? isoToLocalTime(it.schedule.firstDueAt) : localTimeStr();
+      document.getElementById('piFirst').value = first || localTimeStr();
+      const hasDoses = !!(it && intervalEntries(m, it.id).length);
+      document.getElementById('piFirst').disabled = hasDoses;
+      document.getElementById('piFirstHint').textContent = hasDoses ? 'Doses are already logged, so the clock now runs from the last dose taken.' : '';
+      document.getElementById('piStart').value = it ? (it.startDate || '') : (presetPlanId ? '' : today);
       document.getElementById('piEnd').value = it ? (it.endDate || '') : '';
       document.getElementById('piNote').value = it ? (it.note || '') : '';
-      planDraft = { icon: it ? it.icon : PLAN_ICONS[0], color: it ? it.color : PLAN_COLORS[0] };
+      document.getElementById('piMsg').textContent = '';
+      planDraft.icon = it ? it.icon : PLAN_ICONS[0]; planDraft.color = it ? it.color : PLAN_COLORS[0];
       document.getElementById('btnDeletePlanItem').classList.toggle('s-hidden', !it);
-      renderPlanPickers();
+      document.getElementById('btnSaveAddAnother').classList.toggle('s-hidden', !!it);
       updatePlanModeUi();
       document.getElementById('planItemModal').classList.add('active');
     }
@@ -3200,55 +3601,72 @@
       document.getElementById('planItemModal').classList.remove('active');
       editingPlanItemId = null;
     }
-    function savePlanItem() {
+    function savePlanItem(addAnother) {
       const m = getCurMember();
       if (!m) return;
       const name = document.getElementById('piName').value.trim();
       if (!name) return alert('Please enter a name');
-      const mode = document.getElementById('piMode').value === 'asNeeded' ? 'asNeeded' : 'slots';
+      const modeSel = document.getElementById('piMode').value;
+      const mode = modeSel === 'asNeeded' ? 'asNeeded' : modeSel === 'interval' ? 'interval' : 'slots';
       const slots = mode === 'slots' ? PLAN_SLOT_IDS.filter(id => document.querySelector(`#piSlots input[value="${id}"]`).checked) : [];
       if (mode === 'slots' && !slots.length) return alert('Pick at least one time of day');
-      const startDate = document.getElementById('piStart').value;
-      const endDate = document.getElementById('piEnd').value;
-      if (!PLAN_DATE_RE.test(startDate)) return alert('Please pick a start date');
-      const prevItem = editingPlanItemId ? (m.planItems || []).find(x => x.id === editingPlanItemId) : null;
+      const hours = Math.round(Number(document.getElementById('piHours').value));
+      if (mode === 'interval' && !(hours >= 1 && hours <= 72)) return alert('Enter the hours between doses (1 to 72)');
+      const planId = document.getElementById('piPlan').value || null;
+      const plan = findPlan(m, planId);
+      const startDate = document.getElementById('piStart').value, endDate = document.getElementById('piEnd').value;
+      if (!planId && !PLAN_DATE_RE.test(startDate)) return alert('Please pick a start date');
+      const prevItem = editingPlanItemId ? itemOf(m, editingPlanItemId) : null;
       // (an item that was stopped before its first dose legitimately keeps endDate < startDate)
-      if (endDate && endDate < startDate && !(prevItem && prevItem.endDate === endDate)) return alert('The end date is before the start date');
+      if (startDate && endDate && endDate < startDate && !(prevItem && prevItem.endDate === endDate)) return alert('The end date is before the start date');
       const timeVal = document.getElementById('piTime').value;
+      let schedule = { mode, slots };
+      if (mode === 'interval') {
+        const hasDoses = !!(prevItem && intervalEntries(m, prevItem.id).length);
+        const day = startDate || (plan && plan.startDate) || localDateStr();
+        const firstT = PLAN_TIME_RE.test(document.getElementById('piFirst').value) ? document.getElementById('piFirst').value : localTimeStr();
+        const keep = prevItem && planItemIsInterval(prevItem) && (hasDoses || document.getElementById('piFirst').value === isoToLocalTime(prevItem.schedule.firstDueAt));
+        schedule = { mode, everyHours: hours, firstDueAt: keep ? prevItem.schedule.firstDueAt : localDateTimeToIso(day, firstT) };
+      }
       const fields = {
         kind: document.getElementById('piKind').value === 'medication' ? 'medication' : 'supplement',
         name: name.slice(0, 80), dose: document.getElementById('piDose').value.trim().slice(0, 60),
         meal: Object.prototype.hasOwnProperty.call(PLAN_MEALS, document.getElementById('piMeal').value) ? document.getElementById('piMeal').value : 'any',
-        schedule: { mode, slots },
+        schedule, planId,
         time: (mode === 'slots' && slots.length === 1 && PLAN_TIME_RE.test(timeVal)) ? timeVal : '',
         icon: planDraft.icon, color: planDraft.color,
         note: document.getElementById('piNote').value.trim().slice(0, 200),
-        startDate, endDate: endDate || ''
+        startDate: startDate || '', endDate: endDate || ''
       };
       const ok = planCommit(m, () => {
         if (!m.planItems) m.planItems = [];
-        const existing = editingPlanItemId ? m.planItems.find(x => x.id === editingPlanItemId) : null;
-        if (existing) {
-          Object.assign(existing, fields);
-          bumpVersion(existing);
+        if (prevItem) {
+          Object.assign(prevItem, fields);
+          bumpVersion(prevItem);
         } else {
           const maxOrder = Math.max(0, ...live(m.planItems).map(x => x.order || 0));
           m.planItems.push(Object.assign({ id: freshId('pi'), order: maxOrder + 1, archivedRecordId: null }, fields, freshSyncMeta()));
         }
       });
       if (!ok) return;
+      if (addAnother && !prevItem) {      // entering a whole prescription: keep the editor open for the next medicine
+        document.getElementById('piName').value = ''; document.getElementById('piDose').value = ''; document.getElementById('piNote').value = '';
+        document.getElementById('piMsg').textContent = `Added “${fields.name}”. Add the next one, or Cancel to finish.`;
+        document.getElementById('piName').focus();
+        planRerender();
+        return;
+      }
       closePlanItemModal();
       planRerender();
     }
     function deletePlanItem() {
-      const m = getCurMember();
-      const it = m && (m.planItems || []).find(x => x.id === editingPlanItemId);
+      const m = getCurMember(), it = m && itemOf(m, editingPlanItemId);
       if (!it) return;
-      if (!confirm(`Delete "${it.name}" from the Daily Plan?\n\nPast intake history for it is kept in the totals.`)) return;
+      if (!confirm(`Delete "${it.name}" from the Daily Plan?\n\nIts past calendar marks stay.`)) return;
       if (planCommit(m, () => { tombstone(it); })) { closePlanItemModal(); planRerender(); }
     }
 
-    // ---- slot times / names modal ----
+    // ---- time slots modal ----
     function openPlanSlotsModal() {
       const m = getCurMember();
       if (!m) return;
@@ -3278,40 +3696,209 @@
       planRerender();
     }
 
-    // ---- housekeeping: fold old detail into monthly summaries ----
-    function planExpectedForMonth(it, month) {
-      if (!it || planItemIsAsNeeded(it)) return null;
-      const slots = planItemSlots(it).length;
-      const first = month + '-01', last = FHSMerge.monthEndStr(first);
-      const from = (it.startDate && it.startDate > first) ? it.startDate : first;
-      const to = (it.endDate && it.endDate < last) ? it.endDate : last;
-      return from > to ? 0 : (daysBetween(from, to) + 1) * slots;
+    // ---- plans (courses) ----
+    function openPlanEditModal(planId) {
+      const m = getCurMember();
+      if (!m) return;
+      editingPlanId = planId || null;
+      const p = planId ? findPlan(m, planId) : null;
+      document.getElementById('planEditTitle').textContent = p ? 'Edit plan' : 'New plan';
+      document.getElementById('plName').value = p ? p.name : '';
+      document.getElementById('plNote').value = p ? (p.note || '') : '';
+      document.getElementById('plStart').value = p ? (p.startDate || '') : localDateStr();
+      document.getElementById('plEnd').value = p ? (p.endDate || '') : '';
+      document.getElementById('plDanger').classList.toggle('s-hidden', !p);
+      document.getElementById('planEditModal').classList.add('active');
     }
-    // Only WHOLE months before the cutoff are folded, and merge-engine.js drops incoming
-    // detail by the same rule, so a stale device can't re-add rows that were already summarised.
+    function closePlanEditModal() { document.getElementById('planEditModal').classList.remove('active'); editingPlanId = null; }
+    function savePlan() {
+      const m = getCurMember();
+      if (!m) return;
+      const name = document.getElementById('plName').value.trim();
+      if (!name) return alert('Please name the plan (e.g. “Flu - Dr Lim”)');
+      const startDate = document.getElementById('plStart').value, endDate = document.getElementById('plEnd').value;
+      if (!PLAN_DATE_RE.test(startDate)) return alert('Please pick a start date');
+      const prevPlan = editingPlanId ? findPlan(m, editingPlanId) : null;
+      if (endDate && endDate < startDate && !(prevPlan && prevPlan.endDate === endDate)) return alert('The end date is before the start date');
+      const fields = { name: name.slice(0, 80), note: document.getElementById('plNote').value.trim().slice(0, 200), startDate, endDate: endDate || '' };
+      let newId = null;
+      const ok = planCommit(m, () => {
+        if (!m.plans) m.plans = [];
+        if (prevPlan) { Object.assign(prevPlan, fields); bumpVersion(prevPlan); }
+        else { newId = freshId('pl'); m.plans.push(Object.assign({ id: newId, trackFrom: '' }, fields, freshSyncMeta())); }
+      });
+      if (!ok) return;
+      closePlanEditModal();
+      planRerender();
+      if (newId) openPlanItemModal(null, newId);     // straight on to adding the medicines
+    }
+    function planItemsOf(m, planId) { return (m.planItems || []).filter(i => i.planId === planId && !i.deletedAt); }
+    function stopPlan(planId) {
+      const m = getCurMember(), p = m && findPlan(m, planId);
+      if (!p) return;
+      const its = planItemsOf(m, planId).filter(i => !(effEnd(m, i) && effEnd(m, i) < localDateStr()));
+      if (!confirm(`Stop the plan "${p.name}"?\n\nAll its medicines end together and stop appearing in Today. Your history is kept.`)) return;
+      const todo = its.filter(i => !i.archivedRecordId);
+      const wantRecords = todo.length > 0 && confirm(`Also save ${todo.length} medicine(s) from "${p.name}" as Medication records?\n\n(They are grouped under the plan name and show in the Medication List report.)`);
+      const ok = planCommit(m, () => {
+        p.endDate = endDateForStop();
+        bumpVersion(p);
+        if (wantRecords) todo.forEach(i => archivePlanItemAsRecord(m, i, localDateStr()));
+      }, { records: true });
+      if (ok) planRerender();
+    }
+    function resumePlan(planId) {
+      const m = getCurMember(), p = m && findPlan(m, planId);
+      if (!p) return;
+      if (planCommit(m, () => { p.endDate = ''; bumpVersion(p); })) planRerender();
+    }
+    function startCourseNow(planId) {
+      const m = getCurMember(), p = m && findPlan(m, planId);
+      if (!p) return;
+      const its = planItemsOf(m, planId).filter(i => planItemIsInterval(i) && !intervalEntries(m, i.id).length);
+      const now = new Date().toISOString(), today = localDateStr();
+      const ok = planCommit(m, () => {
+        if (p.startDate > today) { p.startDate = today; bumpVersion(p); }
+        its.forEach(i => { if (i.startDate && i.startDate > today) i.startDate = today; i.schedule = Object.assign({}, i.schedule, { firstDueAt: now }); bumpVersion(i); });
+      });
+      if (ok) planRerender();
+    }
+    function linkedDocs(m, planId, date) { return live(m.records).filter(r => r.planId === planId && (!date || r.date === date)); }
+    function tombstoneDocs(m, docs) { docs.forEach(r => tombstone(r)); }
+    function purgeDocFiles(docs) { const ids = docs.flatMap(r => (r.attachments || []).map(a => a.id).filter(Boolean)); if (ids.length) idbDeleteMany(ids); }
+    function clearKeyHistory(m, key) {
+      const ids = new Set((m.planItems || []).filter(i => planKeyOf(i) === key).map(i => i.id));
+      (m.intakeLog || []).forEach(e => { if (!e.deletedAt && ids.has(e.itemId)) tombstone(e); });
+      (m.dayRollups || []).forEach(r => { if (!r.deletedAt && r.planKey === key) tombstone(r); });
+      (m.dayNotes || []).forEach(n => { if (!n.deletedAt && n.planKey === key) tombstone(n); });
+    }
+    function clearPlanHistory() {
+      const m = getCurMember(), p = m && findPlan(m, editingPlanId);
+      if (!p) return;
+      if (!confirm(`Delete the whole calendar history of "${p.name}"?\n\nAll its taken/missed marks and notes are removed. The plan and its medicines stay.`)) return;
+      const docs = linkedDocs(m, p.id);
+      const delDocs = docs.length > 0 && confirm(`Also delete ${docs.length} document(s) linked to this plan?\n\nCancel keeps them in Records.`);
+      const ok = planCommit(m, () => {
+        clearKeyHistory(m, p.id);
+        p.trackFrom = localDateStr(); bumpVersion(p);   // earlier days are never re-counted as missed
+        if (delDocs) tombstoneDocs(m, docs);
+      }, { records: true });
+      if (!ok) return;
+      if (delDocs) purgeDocFiles(docs);
+      closePlanEditModal(); planRerender();
+    }
+    function deletePlan() {
+      const m = getCurMember(), p = m && findPlan(m, editingPlanId);
+      if (!p) return;
+      const its = planItemsOf(m, p.id);
+      if (!confirm(`Delete the plan "${p.name}" and its ${its.length} medicine(s) from the Daily Plan?`)) return;
+      const hasHistory = (m.intakeLog || []).some(e => !e.deletedAt && its.some(i => i.id === e.itemId)) || live(m.dayRollups).some(r => r.planKey === p.id) || live(m.dayNotes).some(n => n.planKey === p.id);
+      const delHistory = hasHistory && confirm('Also delete its calendar history (taken/missed marks and notes)?\n\nOK = delete them. Cancel = keep the calendar for future reference.');
+      const docs = linkedDocs(m, p.id);
+      const delDocs = docs.length > 0 && confirm(`Also delete ${docs.length} document(s) linked to this plan?\n\nCancel keeps them in Records.`);
+      const ok = planCommit(m, () => {
+        if (delHistory) clearKeyHistory(m, p.id);
+        its.forEach(i => tombstone(i));
+        tombstone(p);
+        if (delDocs) tombstoneDocs(m, docs);
+      }, { records: true });
+      if (!ok) return;
+      if (delDocs) purgeDocFiles(docs);
+      closePlanEditModal(); planRerender();
+    }
+
+    // ---- calendar: day sheet ----
+    function openPlanDay(date) {
+      const m = getCurMember();
+      if (!m || !PLAN_DATE_RE.test(date)) return;
+      planDayDate = date;
+      document.getElementById('planDayTitle').textContent = new Date(date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+      document.getElementById('planDayBody').innerHTML = renderDaySheet(m, date);
+      document.getElementById('planDayModal').classList.add('active');
+    }
+    function closePlanDayModal() { document.getElementById('planDayModal').classList.remove('active'); planDayDate = null; }
+    function saveDayNotes() {
+      const m = getCurMember();
+      if (!m || !planDayDate) return;
+      const date = planDayDate;
+      const vals = Array.from(document.querySelectorAll('#planDayBody [data-note-key]')).map(t => [t.dataset.noteKey, t.value]);
+      if (!planCommit(m, () => { vals.forEach(([k, v]) => setDayNote(m, k, date, v)); })) return;
+      closePlanDayModal(); planRerender();
+    }
+    function addRecordForDay() {
+      if (!planDayDate) return;
+      const date = planDayDate, f = planCal.filter;
+      closePlanDayModal();
+      pendingRecordPlanId = (f !== 'all' && f !== 'g') ? f : null;      // linked only when added from inside one plan's calendar
+      openModal('record');
+      document.getElementById('rDate').value = date;
+    }
+    function addDocForPlan(planId) {
+      pendingRecordPlanId = planId;
+      openModal('record');
+    }
+    function openLinkedRecord(id) {
+      closePlanDayModal();
+      openModal('record', null, id);
+    }
+    function deletePlanDay() {
+      const m = getCurMember();
+      if (!m || !planDayDate) return;
+      const date = planDayDate, f = planCal.filter, inScope = k => f === 'all' || k === f;
+      if (!confirm(`Delete the calendar history for ${date}${f === 'all' ? '' : ' (' + planNameOfKey(m, f) + ')'}?\n\nIts marks and notes are removed. Medicines and plans stay.`)) return;
+      const docs = live(m.records).filter(r => r.date === date && r.planId && inScope(r.planId));
+      const delDocs = docs.length > 0 && confirm(`Also delete ${docs.length} document(s) linked to this day?\n\nCancel keeps them in Records.`);
+      const keys = new Set(Object.keys(computeDay(m, date)));
+      live(m.dayNotes).filter(n => n.date === date).forEach(n => keys.add(n.planKey));
+      if (f !== 'all') keys.add(f);
+      const ok = planCommit(m, () => {
+        (m.intakeLog || []).forEach(e => {
+          if (e.date !== date || e.deletedAt) return;
+          const it = itemOf(m, e.itemId);
+          if (inScope(it ? planKeyOf(it) : 'g')) tombstone(e);
+        });
+        keys.forEach(k => { if (!inScope(k)) return; upsertClearedRollup(m, k, date); const n = findDayNote(m, k, date); if (n && !n.deletedAt) tombstone(n); });
+        if (delDocs) tombstoneDocs(m, docs);
+      }, { records: true });
+      if (!ok) return;
+      if (delDocs) purgeDocFiles(docs);
+      closePlanDayModal(); planRerender();
+    }
+
+    // ---- housekeeping: per-dose detail ages out, the calendar day stays ----
+    // Every day older than the cutoff becomes (at most) one dayRollups row per plan, computed with the
+    // same computeDay() the calendar uses, then its per-dose entries are dropped. Rows the user already
+    // cleared/deleted are respected (never recreated). merge-engine.js drops incoming detail by the same
+    // rule, so a stale device can't re-add days that were already folded.
     function compactMemberIntakeLog(m, cutoff) {
-      if (!m || !Array.isArray(m.intakeLog) || !m.intakeLog.length) return false;
-      const keep = [], fold = new Map();
-      m.intakeLog.forEach(e => {
-        if (!FHSMerge.isCompactedDate(e.date, cutoff)) { keep.push(e); return; }
-        if (e.deletedAt) return;                                   // old undo markers: just drop
-        const month = e.date.slice(0, 7), key = e.itemId + '_' + month;
-        const s = fold.get(key) || { id: key, itemId: e.itemId, month, taken: 0, skipped: 0 };
-        if (e.status === 'taken') s.taken++; else if (e.status === 'skipped') s.skipped++;
-        fold.set(key, s);
+      if (!m) return false;
+      const dates = new Set();
+      (m.intakeLog || []).forEach(e => { if (e.date < cutoff) dates.add(e.date); });
+      let earliest = null;                          // also fold days where nothing was logged (= missed)
+      (m.planItems || []).forEach(it => { if (it.deletedAt) return; const s = effStart(m, it); if (s && (!earliest || s < earliest)) earliest = s; });
+      const floor = addDaysStr(cutoff, -400);
+      if (earliest && earliest < floor) earliest = floor;
+      if (earliest) for (let d = earliest; d < cutoff; d = addDaysStr(d, 1)) dates.add(d);
+      if (!dates.size) return false;
+      let changed = false;
+      Array.from(dates).sort().forEach(d => {
+        const parts = computeDay(m, d, true);
+        Object.keys(parts).forEach(key => {
+          const p = parts[key];
+          if (!(p.taken || p.skipped || p.missed)) return;
+          const id = key + '_' + d, ex = (m.dayRollups || []).find(r => r.id === id);
+          if (ex) {
+            if (!ex.deletedAt && !ex.cleared) { ex.taken = Math.max(ex.taken || 0, p.taken); ex.skipped = Math.max(ex.skipped || 0, p.skipped); ex.missed = Math.max(ex.missed || 0, p.missed); }
+            return;
+          }
+          if (!m.dayRollups) m.dayRollups = [];
+          m.dayRollups.push(Object.assign({ id, planKey: key, date: d, taken: p.taken, skipped: p.skipped, missed: p.missed, cleared: false }, freshSyncMeta()));
+          changed = true;
+        });
       });
-      if (keep.length === m.intakeLog.length) return false;
-      if (!Array.isArray(m.intakeSummaries)) m.intakeSummaries = [];
-      fold.forEach(s => {
-        s.expected = planExpectedForMonth((m.planItems || []).find(x => x.id === s.itemId), s.month);
-        const prev = m.intakeSummaries.find(x => x.id === s.id);
-        if (prev) {   // idempotent: never double-count
-          prev.taken = Math.max(prev.taken || 0, s.taken); prev.skipped = Math.max(prev.skipped || 0, s.skipped);
-          prev.expected = prev.expected == null ? s.expected : (s.expected == null ? prev.expected : Math.max(prev.expected, s.expected));
-        } else m.intakeSummaries.push(s);
-      });
-      m.intakeLog = keep;
-      return true;
+      const before = (m.intakeLog || []).length;
+      if (m.intakeLog) m.intakeLog = m.intakeLog.filter(e => !(e.date < cutoff));
+      return changed || (m.intakeLog || []).length !== before;
     }
     function compactPlanLogs(allMembers) {
       const cutoff = intakeCutoffDate();
@@ -3319,27 +3906,42 @@
     }
 
     // ---- import sanitising (backup files are untrusted input) ----
+    function planDate(v) { return PLAN_DATE_RE.test(v || '') ? v : ''; }
+    function planIso(v) { return (typeof v === 'string' && !isNaN(Date.parse(v))) ? new Date(v).toISOString() : null; }
     function normalizePlanItems(arr) {
       return arr.filter(o => o && typeof o === 'object').map(it => {
         const sc = (it.schedule && typeof it.schedule === 'object') ? it.schedule : {};
-        const mode = sc.mode === 'asNeeded' ? 'asNeeded' : 'slots';
+        const mode = sc.mode === 'asNeeded' ? 'asNeeded' : sc.mode === 'interval' ? 'interval' : 'slots';
+        const schedule = { mode, slots: (mode === 'slots' && Array.isArray(sc.slots)) ? PLAN_SLOT_IDS.filter(s => sc.slots.includes(s)) : [] };
+        if (mode === 'interval') {
+          const h = Math.round(Number(sc.everyHours));
+          schedule.everyHours = (h >= 1 && h <= 72) ? h : 8;
+          schedule.firstDueAt = planIso(sc.firstDueAt) || '';
+        }
         return {
           id: sanitizeId(it.id, freshId('pi')),
           version: it.version, updatedAt: it.updatedAt, deletedAt: it.deletedAt, schemaVersion: it.schemaVersion,
           kind: it.kind === 'medication' ? 'medication' : 'supplement',
           name: String(it.name || 'Item').slice(0, 80), dose: String(it.dose || '').slice(0, 60),
           meal: Object.prototype.hasOwnProperty.call(PLAN_MEALS, it.meal) ? it.meal : 'any',
-          schedule: { mode, slots: (mode === 'slots' && Array.isArray(sc.slots)) ? PLAN_SLOT_IDS.filter(s => sc.slots.includes(s)) : [] },
+          schedule, planId: it.planId ? sanitizeId(it.planId, null) : null,
           time: PLAN_TIME_RE.test(it.time || '') ? it.time : '',
           icon: PLAN_ICONS.includes(it.icon) ? it.icon : PLAN_ICONS[0],
           color: PLAN_COLORS.includes(it.color) ? it.color : PLAN_COLORS[0],
           note: String(it.note || '').slice(0, 200),
           order: Number.isFinite(it.order) ? it.order : 0,
-          startDate: PLAN_DATE_RE.test(it.startDate || '') ? it.startDate : '',
-          endDate: PLAN_DATE_RE.test(it.endDate || '') ? it.endDate : '',
+          startDate: planDate(it.startDate), endDate: planDate(it.endDate),
           archivedRecordId: it.archivedRecordId ? sanitizeId(it.archivedRecordId, null) : null
         };
       });
+    }
+    function normalizePlans(arr) {
+      return arr.filter(o => o && typeof o === 'object').map(p => ({
+        id: sanitizeId(p.id, freshId('pl')),
+        version: p.version, updatedAt: p.updatedAt, deletedAt: p.deletedAt, schemaVersion: p.schemaVersion,
+        name: String(p.name || 'Plan').slice(0, 80), note: String(p.note || '').slice(0, 200),
+        startDate: planDate(p.startDate), endDate: planDate(p.endDate), trackFrom: planDate(p.trackFrom)
+      }));
     }
     function normalizeIntakeLog(arr) {
       const out = [];
@@ -3348,11 +3950,11 @@
         const itemId = sanitizeId(e.itemId, null);
         if (!itemId || !PLAN_DATE_RE.test(e.date || '')) return;
         const slot = PLAN_SLOT_IDS.includes(e.slot) ? e.slot : null;
-        const t = (typeof e.takenAt === 'string' && !isNaN(Date.parse(e.takenAt))) ? new Date(e.takenAt).toISOString() : null;
+        const status = e.status === 'skipped' ? 'skipped' : (e.status === 'missed' && !slot) ? 'missed' : 'taken';
         out.push({
           id: slot ? makeIntakeId(itemId, e.date, slot) : sanitizeId(e.id, freshId('in')),
-          itemId, date: e.date, slot,
-          status: (slot && e.status === 'skipped') ? 'skipped' : 'taken', takenAt: t,
+          itemId, date: e.date, slot, status, takenAt: planIso(e.takenAt),
+          dueAt: planIso(e.dueAt), fillFor: e.fillFor ? sanitizeId(e.fillFor, null) : null,
           version: e.version, updatedAt: e.updatedAt, deletedAt: e.deletedAt, schemaVersion: e.schemaVersion
         });
       });
@@ -3369,6 +3971,28 @@
       });
       return out;
     }
+    function normalizeDayNotes(arr) {
+      const out = [];
+      arr.forEach(n => {
+        if (!n || typeof n !== 'object') return;
+        const key = sanitizeId(n.planKey, null);
+        if (!key || !PLAN_DATE_RE.test(n.date || '')) return;
+        out.push({ id: dayNoteId(key, n.date), planKey: key, date: n.date, text: String(n.text || '').slice(0, PLAN_NOTE_MAX),
+                   version: n.version, updatedAt: n.updatedAt, deletedAt: n.deletedAt, schemaVersion: n.schemaVersion });
+      });
+      return out;
+    }
+    function normalizeDayRollups(arr) {
+      const out = [], num = v => (Number.isFinite(v) && v >= 0) ? Math.floor(v) : 0;
+      arr.forEach(r => {
+        if (!r || typeof r !== 'object') return;
+        const key = sanitizeId(r.planKey, null);
+        if (!key || !PLAN_DATE_RE.test(r.date || '')) return;
+        out.push({ id: key + '_' + r.date, planKey: key, date: r.date, taken: num(r.taken), skipped: num(r.skipped), missed: num(r.missed), cleared: !!r.cleared,
+                   version: r.version, updatedAt: r.updatedAt, deletedAt: r.deletedAt, schemaVersion: r.schemaVersion });
+      });
+      return out;
+    }
     function normalizePlanSettings(o) {
       if (!o || typeof o !== 'object') return undefined;
       const slotTimes = {}, slotLabels = {};
@@ -3380,14 +4004,17 @@
       return { version: Number.isFinite(o.version) ? o.version : 1, updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : nowIso(), slotTimes, slotLabels };
     }
 
-    // ---- click / change handling (delegated; see the document listeners at the bottom of the file) ----
+    // ---- click handling (delegated; see the document listeners at the bottom of the file) ----
     function handlePlanClick(el) {
       const d = el.dataset;
       if ('planToggle' in d) return togglePlanDose(d.item, d.slot, d.date, false);
-      if ('planSkip' in d) return togglePlanDose(d.item, d.slot, d.date, true);
+      if ('planSkip' in d) return openSkipModal({ type: 'slot', itemId: d.item, slot: d.slot, date: d.date });
+      if ('planTake' in d) return takeIntervalDose(d.item);
+      if ('planSkipIv' in d) return openSkipModal({ type: 'interval', itemId: d.item });
       if ('planAsneeded' in d) return logAsNeededDose(d.item);
       if ('planUndo' in d) return undoIntakeEntry(d.entryId);
-      if ('planAdd' in d) return openPlanItemModal(null);
+      if ('planAdd' in d) return openPlanItemModal(null, null);
+      if ('planAddIn' in d) return openPlanItemModal(null, d.planAddIn);
       if ('planEdit' in d) return openPlanItemModal(d.planEdit);
       if ('planUp' in d) return movePlanItem(d.planUp, -1);
       if ('planDown' in d) return movePlanItem(d.planDown, 1);
@@ -3396,10 +4023,28 @@
       if ('planArchive' in d) return archivePlanItemClick(d.planArchive);
       if ('planSettings' in d) return openPlanSlotsModal();
       if ('planOpenTab' in d) return switchTab('plan');
+      if ('planView' in d) { planView = d.planView === 'calendar' ? 'calendar' : 'list'; return planRerender(); }
+      if ('planNewPlan' in d) return openPlanEditModal(null);
+      if ('planEditPlan' in d) return openPlanEditModal(d.planEditPlan);
+      if ('planStopPlan' in d) return stopPlan(d.planStopPlan);
+      if ('planResumePlan' in d) return resumePlan(d.planResumePlan);
+      if ('planStartCourse' in d) return startCourseNow(d.planStartCourse);
+      if ('planOpenRecord' in d) return openLinkedRecord(d.planOpenRecord);
+      if ('planAddDoc' in d) return addDocForPlan(d.planAddDoc);
+      if ('calNav' in d) {
+        const [y, mo] = (planCal.ym || localDateStr().slice(0, 7)).split('-').map(Number);
+        const t = new Date(y, mo - 1 + (d.calNav === '1' ? 1 : -1), 1);
+        planCal.ym = t.getFullYear() + '-' + pad2(t.getMonth() + 1);
+        return planRerender();
+      }
+      if ('calDay' in d) return openPlanDay(d.calDay);
+      if ('skipReason' in d && PLAN_SKIP_REASONS.includes(d.skipReason)) { planDraft.skipReason = planDraft.skipReason === d.skipReason ? '' : d.skipReason; return renderSkipChips(); }
+      if ('pickHours' in d) { document.getElementById('piHours').value = d.pickHours; return renderPlanPickers(); }
       if ('pickIcon' in d && PLAN_ICONS.includes(d.pickIcon)) { planDraft.icon = d.pickIcon; return renderPlanPickers(); }
       if ('pickColor' in d && PLAN_COLORS.includes(d.pickColor)) { planDraft.color = d.pickColor; return renderPlanPickers(); }
     }
 
+    // ========== TABS ==========
     // ========== TABS ==========
     function switchTab(tab) {
       currentTab = tab;
@@ -3488,6 +4133,7 @@
         document.getElementById('bloodAttachmentPreview').innerHTML = '';
       } else {
         editingRecordId = null;
+        pendingRecordPlanId = null;
         ['rDate','rTitle','rDetails','rTags','vSystolic','vDiastolic','vHeartRate','vTemp','vGlucose','vWeight'].forEach(id => document.getElementById(id).value = '');
       }
     }
@@ -3576,6 +4222,8 @@
       const vWeight = document.getElementById('vWeight').value;
       if (vWeight) record.vitals.weight = parseFloat(vWeight);
 
+      const linkPlan = priorRecordForAttachments ? priorRecordForAttachments.planId : pendingRecordPlanId;
+      if (linkPlan) record.planId = linkPlan;   // Daily Plan: receipt/report linked to a plan
       if (Object.keys(record.vitals).length === 0) delete record.vitals;
       if (record.attachments.length === 0) delete record.attachments; // fine: syncStampAttachments never returns an empty array if a tombstone exists
 
@@ -4025,7 +4673,7 @@
       `).join('');
 
       // Current daily plan: derived live from the plan (never stored a second time)
-      const planNow = sortedPlanItems(m).filter(it => planItemActiveOn(it, localDateStr()));
+      const planNow = sortedPlanItems(m).filter(it => planItemActiveOn(m, it, localDateStr()));
       const planSectionHtml = planNow.length ? `
           <h2 class="pr-h2">Current daily plan</h2>
           <table class="pr-table">
@@ -4541,6 +5189,9 @@
             repeatMonths: parseInt(cr.repeatMonths) || 0,
             notes: cr.notes || ''
           })) : [],
+          plans: Array.isArray(raw.plans) ? normalizePlans(raw.plans) : undefined,
+          dayNotes: Array.isArray(raw.dayNotes) ? normalizeDayNotes(raw.dayNotes) : undefined,
+          dayRollups: Array.isArray(raw.dayRollups) ? normalizeDayRollups(raw.dayRollups) : undefined,
           planItems: Array.isArray(raw.planItems) ? normalizePlanItems(raw.planItems) : undefined,
           planSettings: normalizePlanSettings(raw.planSettings),
           intakeLog: Array.isArray(raw.intakeLog) ? normalizeIntakeLog(raw.intakeLog) : undefined,
@@ -4554,6 +5205,7 @@
             details: r.details || '',
             tags: Array.isArray(r.tags) ? r.tags : [],
             vitals: sanitizeVitals(r.vitals),
+            planId: r.planId ? sanitizeId(r.planId, null) || undefined : undefined,
             attachments: Array.isArray(r.attachments) ? sanitizeIdsDeep(r.attachments) : undefined
           })) : []
         };
@@ -4681,7 +5333,9 @@
     const CONTAINER_SCALAR_KEYS = {
       records: FHSMerge.RECORD_SCALAR_KEYS,
       customReminders: FHSMerge.REMINDER_SCALAR_KEYS,
-      planItems: FHSMerge.PLAN_ITEM_SCALAR_KEYS
+      planItems: FHSMerge.PLAN_ITEM_SCALAR_KEYS,
+      plans: FHSMerge.PLAN_SCALAR_KEYS,
+      dayNotes: FHSMerge.DAY_NOTE_SCALAR_KEYS
     };
 
     // Applies a resolution choice and removes the conflict from the queue.
@@ -5450,7 +6104,7 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     // (kept as data-attributes + delegation, rather than inline onclick="", so the
     // page's CSP can drop 'unsafe-inline' from script-src)
     document.addEventListener('click', function(e) {
-      const planEl = e.target.closest('[data-plan-toggle],[data-plan-skip],[data-plan-asneeded],[data-plan-undo],[data-plan-add],[data-plan-edit],[data-plan-up],[data-plan-down],[data-plan-stop],[data-plan-resume],[data-plan-archive],[data-plan-settings],[data-plan-open-tab],[data-pick-icon],[data-pick-color]');
+      const planEl = e.target.closest(PLAN_CLICK_SELECTOR);
       if (planEl) { handlePlanClick(planEl); return; }
       const reportBtn = e.target.closest('[data-report-type]');
       if (reportBtn) {
@@ -5468,7 +6122,9 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     // Daily Plan: editing the time a dose was taken (native <input type="time">)
     document.addEventListener('change', function(e) {
       const t = e.target.closest ? e.target.closest('[data-plan-takentime]') : null;
-      if (t) editIntakeTime(t);
+      if (t) return editIntakeTime(t);
+      const f = e.target.closest ? e.target.closest('[data-cal-filter]') : null;
+      if (f) { planCal.filter = f.value; planRerender(); }
     });
 
     // ===== PWA: simple offline indicator =====

@@ -5,7 +5,7 @@
 const {
   mergeMembers, mergeSyncArray, mergeAttachmentArray, freshFieldVersions,
   cloneWithFreshIds, collectLiveAttachmentIds, collectAttachmentObjects, orphanedAttachmentIds,
-  mergeIntakeLog, mergeIntakeSummaries, isCompactedDate, monthEndStr
+  mergeIntakeLog, mergeIntakeSummaries, isCompactedDate, monthEndStr, mergeDayRollups
 } = require('./merge-engine.js');
 
 let pass = 0, fail = 0;
@@ -513,16 +513,16 @@ function att(id, extra) { return Object.assign({ id, name: id + '.jpg', type: 'i
     ok('intake: as-needed doses from two devices are both kept', mergeIntakeLog(a, b).length === 2);
   }
 
-  // --- cutoff: whole-month rule
+  // --- cutoff: per-day rule (v64)
   ok('cutoff: monthEndStr', monthEndStr('2026-02-10') === '2026-02-28' && monthEndStr('2028-02-10') === '2028-02-29' && monthEndStr('2026-12-01') === '2026-12-31');
-  ok('cutoff: month fully before cutoff is compacted', isCompactedDate('2026-07-15', '2026-08-01') === true);
-  ok('cutoff: month straddling the cutoff is kept', isCompactedDate('2026-07-15', '2026-07-31') === false);
+  ok('cutoff: a day before the cutoff is compacted', isCompactedDate('2026-07-15', '2026-07-16') === true);
+  ok('cutoff: the cutoff day itself is kept', isCompactedDate('2026-07-16', '2026-07-16') === false);
   ok('cutoff: no cutoff => nothing compacted', isCompactedDate('2020-01-01', undefined) === false);
   {
-    const old = intake('pA', '2026-06-10', 'morning'), edge = intake('pA', '2026-07-05', 'morning'), cur = intake('pA', '2026-10-14', 'morning');
+    const old = intake('pA', '2026-06-10', 'morning'), edge = intake('pA', '2026-07-25', 'morning'), cur = intake('pA', '2026-10-14', 'morning');
     const out = mergeIntakeLog([old, edge], [cur], '2026-07-20');
     const ids = out.map(e => e.date).sort();
-    ok('cutoff: old detail cannot be resurrected by a merge', JSON.stringify(ids) === JSON.stringify(['2026-07-05', '2026-10-14']), JSON.stringify(ids));
+    ok('cutoff: old detail cannot be resurrected by a merge', JSON.stringify(ids) === JSON.stringify(['2026-07-25', '2026-10-14']), JSON.stringify(ids));
   }
 
   // --- summaries: grow-only max, idempotent, symmetric
@@ -551,12 +551,81 @@ function att(id, extra) { return Object.assign({ id, name: id + '.jpg', type: 'i
 
   // --- full-member cutoff wiring through mergeMembers opts
   {
-    const lm = [makeMember('m1', { intakeLog: [intake('pA', '2026-03-01', 'morning')] })];
+    const lm = [makeMember('m1', { intakeLog: [intake('pA', '2026-03-01', 'morning')] })];  // far older than the cutoff
     const rm = [makeMember('m1', { intakeLog: [intake('pA', '2026-10-14', 'morning')] })];
     const res = mergeMembers(clone(lm), clone(rm), { intakeCutoff: '2026-07-16' });
     ok('mergeMembers: opts.intakeCutoff is honoured', res.members[0].intakeLog.length === 1 && res.members[0].intakeLog[0].date === '2026-10-14');
     const noCut = mergeMembers(clone(lm), clone(rm));
     ok('mergeMembers: without opts nothing is pruned', noCut.members[0].intakeLog.length === 2);
+  }
+})();
+
+
+// ============================================================
+// 16. Plans, interval doses, day rollups, day notes (v63/v64)
+// ============================================================
+(function testPlansV63() {
+  const byId = arr => arr.slice().sort((a, b) => (a.id < b.id ? -1 : 1));
+  const plan = (id, o) => Object.assign({ id, name: 'Flu course', note: '', startDate: '2026-10-10', endDate: '' }, freshMeta(), o || {});
+  const roll = (planKey, date, o) => Object.assign({ id: `${planKey}_${date}`, planKey, date, taken: 2, skipped: 0, missed: 0 }, freshMeta(), o || {});
+
+  // plans: union, higher version wins, same-version content difference conflicts
+  {
+    const l = [makeMember('m1', { plans: [plan('pl1')] })], r = clone(l);
+    r[0].plans.push(plan('pl2', { name: 'Eye drops' }));
+    r[0].plans[0].name = 'Flu (Dr Lim)'; r[0].plans[0].version = 2;
+    const res = mergeMembers(clone(l), clone(r));
+    ok('plans: union + higher version wins', res.members[0].plans.length === 2 && res.members[0].plans.find(p => p.id === 'pl1').name === 'Flu (Dr Lim)' && res.conflicts.length === 0);
+    r[0].plans[0].version = 1; r[0].plans[0].note = 'rest';
+    ok('plans: same-version content difference is a conflict', mergeMembers(clone(l), clone(r)).conflicts.length === 1);
+  }
+  // day notes: free text conflicts, one-sided edits do not
+  {
+    const n = (o) => Object.assign({ id: 'pl1_2026-10-14', planKey: 'pl1', date: '2026-10-14', text: 'vomited' }, freshMeta(), o || {});
+    const l = [makeMember('m1', { dayNotes: [n()] })], r = clone(l);
+    r[0].dayNotes[0].text = 'vomited, retried at 9'; r[0].dayNotes[0].version = 2;
+    const res = mergeMembers(clone(l), clone(r));
+    ok('dayNotes: higher version wins, no conflict', res.conflicts.length === 0 && res.members[0].dayNotes[0].text === 'vomited, retried at 9');
+    r[0].dayNotes[0].version = 1;
+    ok('dayNotes: same-version different text is a conflict (never silently merged)', mergeMembers(clone(l), clone(r)).conflicts.length === 1);
+  }
+  // 'missed' ranks below skipped and taken on a version tie; filler 'missed' never beats a real dose
+  {
+    const base = { id: 'in1', itemId: 'pX', date: '2026-10-14', slot: null, dueAt: '2026-10-14T03:00:00.000Z' };
+    const mk = (status, takenAt) => Object.assign({}, base, { status, takenAt }, freshMeta());
+    const a = mergeIntakeLog([mk('missed', null)], [mk('taken', '2026-10-14T05:00:00.000Z')]);
+    const b = mergeIntakeLog([mk('taken', '2026-10-14T05:00:00.000Z')], [mk('skipped', null)]);
+    const c = mergeIntakeLog([mk('missed', null)], [mk('skipped', null)]);
+    ok('intake: taken beats missed (tie)', a[0].status === 'taken');
+    ok('intake: taken beats skipped (tie)', b[0].status === 'taken');
+    ok('intake: skipped beats missed (tie)', c[0].status === 'skipped');
+    ok('intake: interval fields survive the merge', a[0].dueAt === base.dueAt);
+  }
+  // rollups: higher version wins (a user delete is a v2 tombstone), live beats tombstone on tie, field max otherwise
+  {
+    const live1 = roll('pl1', '2026-06-01', { taken: 3 }), tomb = Object.assign({}, live1, { version: 2, deletedAt: '2026-10-01T00:00:00.000Z' });
+    const x = mergeDayRollups([live1], [tomb]), y = mergeDayRollups([tomb], [live1]);
+    ok('rollups: a user delete (v2) beats a re-fold (v1), both orders', x[0].deletedAt && y[0].deletedAt);
+    const a = roll('pl1', '2026-06-02', { taken: 1, missed: 2 }), b = roll('pl1', '2026-06-02', { taken: 3, missed: 0 });
+    const m1 = mergeDayRollups([a], [b]), m2 = mergeDayRollups([b], [a]);
+    ok('rollups: same-version live rows take per-field max', m1[0].taken === 3 && m1[0].missed === 2);
+    ok('rollups: symmetric + idempotent', JSON.stringify(byId(m1)) === JSON.stringify(byId(m2)) && JSON.stringify(mergeDayRollups(m1, b)) === JSON.stringify(m1));
+    const lt = Object.assign({}, a, { deletedAt: 'x' });
+    ok('rollups: tie live beats tombstone', !mergeDayRollups([a], [lt])[0].deletedAt);
+  }
+  // wiring through members
+  {
+    const l = [makeMember('m1', { dayRollups: [roll('g', '2026-05-01')] })], r = [makeMember('m1', { dayRollups: [roll('pl1', '2026-05-02')] })];
+    r[0].id = l[0].id;
+    ok('mergeMembers: rollups from both sides are kept', mergeMembers(clone(l), clone(r)).members[0].dayRollups.length === 2);
+  }
+  // items can move between plans (planId is content), members without plans gain nothing
+  {
+    const l = [makeMember('m1', { planItems: [Object.assign({ id: 'pA', name: 'Amox', schedule: { mode: 'interval', everyHours: 8 }, planId: 'pl1' }, freshMeta())] })], r = clone(l);
+    r[0].planItems[0].planId = null; r[0].planItems[0].version = 2;
+    ok('planItems: planId change at a higher version wins', mergeMembers(clone(l), clone(r)).members[0].planItems[0].planId === null);
+    const plain = mergeMembers([makeMember('m2')], [makeMember('m2')]);
+    ok('v63: members without plan data still gain no plan keys', !('plans' in plain.members[0]) && !('dayNotes' in plain.members[0]) && !('dayRollups' in plain.members[0]));
   }
 })();
 

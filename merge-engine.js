@@ -242,7 +242,12 @@ const REMINDER_SCALAR_KEYS = ['title', 'dueDate', 'repeatMonths', 'notes'];
 // Daily Plan items. `order` (display position) and `archivedRecordId` are
 // deliberately NOT listed: two devices that only differ in those must never
 // raise a conflict (reordering is cosmetic; archiving is a one-shot helper).
-const PLAN_ITEM_SCALAR_KEYS = ['kind', 'name', 'dose', 'meal', 'schedule', 'time', 'icon', 'color', 'note', 'startDate', 'endDate'];
+const PLAN_ITEM_SCALAR_KEYS = ['kind', 'name', 'dose', 'meal', 'schedule', 'time', 'icon', 'color', 'note', 'startDate', 'endDate', 'planId'];
+// A "plan" (v63) is one course/routine that groups several medicines.
+const PLAN_SCALAR_KEYS = ['name', 'note', 'startDate', 'endDate', 'trackFrom'];
+// One short free-text note per plan per day (v64). Free text is never silently
+// merged: two different edits at the same version surface as a normal conflict.
+const DAY_NOTE_SCALAR_KEYS = ['text'];
 
 // ---------- Daily Plan: intake log ----------
 // Last calendar day of the month that `dateStr` (YYYY-MM-DD) falls in.
@@ -253,24 +258,25 @@ function monthEndStr(dateStr) {
   return String(dateStr).slice(0, 8) + String(last).padStart(2, '0');
 }
 
-// A log entry is "compacted" once its WHOLE month lies before the cutoff
-// date. Used identically by the app's local compaction and by the merge, so
-// an old device re-importing old detail can never resurrect rows that were
-// already folded into a monthly summary.
+// A log entry is "compacted" once its DAY lies before the cutoff date (v64: folded
+// into one dayRollups row per plan per day). Used identically by the app's local
+// compaction and by the merge, so an old device re-importing old detail can never
+// resurrect rows that were already folded.
 function isCompactedDate(dateStr, cutoff) {
-  return !!cutoff && typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && monthEndStr(dateStr) < cutoff;
+  return !!cutoff && typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && dateStr < cutoff;
 }
 
 // Intake entries never raise conflicts: two devices logging the same dose is
 // normal. Rules are symmetric (merge(a,b) === merge(b,a) in content):
 //   higher version wins; on a tie prefer a live entry over a tombstone, then
-//   'taken' over 'skipped', then the EARLIER takenAt, then the smaller JSON.
+//   'taken' over 'skipped' over 'missed', then the EARLIER takenAt, then the smaller JSON.
 function pickIntake(l, r) {
   const lv = Number.isFinite(l.version) ? l.version : 1;
   const rv = Number.isFinite(r.version) ? r.version : 1;
   if (lv !== rv) return lv > rv ? l : r;
   if (!!l.deletedAt !== !!r.deletedAt) return l.deletedAt ? r : l;
-  if (l.status !== r.status) return l.status === 'taken' ? l : r;
+  const rank = { taken: 3, skipped: 2, missed: 1 };
+  if (l.status !== r.status) return (rank[l.status] || 0) >= (rank[r.status] || 0) ? l : r;
   const lt = l.takenAt || '', rt = r.takenAt || '';
   if (lt !== rt) { if (!lt) return r; if (!rt) return l; return lt < rt ? l : r; }
   return JSON.stringify(l) <= JSON.stringify(r) ? l : r;
@@ -302,6 +308,25 @@ function mergeIntakeSummaries(localArr, remoteArr) {
       skipped: maxNum(prev.skipped, s.skipped),
       expected: maxNum(prev.expected, s.expected)
     }));
+  });
+  return Array.from(byId.values());
+}
+
+// Per-day rollups (v64): one row per plan per day, written when per-dose detail
+// ages out. The user can delete a day, which tombstones the row, so rows carry
+// version/deletedAt. Higher version wins; on a tie a live row beats a tombstone;
+// two live rows at the same version take the per-field max (order-independent).
+function mergeDayRollups(localArr, remoteArr) {
+  const byId = new Map();
+  const mx = (a, b) => Math.max(Number.isFinite(a) ? a : 0, Number.isFinite(b) ? b : 0);
+  [].concat(localArr || [], remoteArr || []).forEach(e => {
+    if (!e || typeof e.id !== 'string') return;
+    const prev = byId.get(e.id);
+    if (!prev) { byId.set(e.id, Object.assign({}, e)); return; }
+    const pv = Number.isFinite(prev.version) ? prev.version : 1, ev = Number.isFinite(e.version) ? e.version : 1;
+    if (pv !== ev) { byId.set(e.id, Object.assign({}, pv > ev ? prev : e)); return; }
+    if (!!prev.deletedAt !== !!e.deletedAt) { byId.set(e.id, Object.assign({}, prev.deletedAt ? e : prev)); return; }
+    byId.set(e.id, Object.assign({}, prev, { taken: mx(prev.taken, e.taken), skipped: mx(prev.skipped, e.skipped), missed: mx(prev.missed, e.missed), cleared: !!(prev.cleared || e.cleared) }));
   });
   return Array.from(byId.values());
 }
@@ -369,6 +394,19 @@ function mergeMemberPair(local, remote, conflicts, opts) {
   }
   if (local.intakeLog || remote.intakeLog) {
     winner.intakeLog = mergeIntakeLog(local.intakeLog, remote.intakeLog, opts.intakeCutoff);
+  }
+  if (local.plans || remote.plans) {
+    winner.plans = mergeSyncArray(local.plans, remote.plans, {
+      path: [local.id, 'plans'], conflicts, ancestorTombstoned: tombstoned, scalarKeys: PLAN_SCALAR_KEYS
+    });
+  }
+  if (local.dayNotes || remote.dayNotes) {
+    winner.dayNotes = mergeSyncArray(local.dayNotes, remote.dayNotes, {
+      path: [local.id, 'dayNotes'], conflicts, ancestorTombstoned: tombstoned, scalarKeys: DAY_NOTE_SCALAR_KEYS
+    });
+  }
+  if (local.dayRollups || remote.dayRollups) {
+    winner.dayRollups = mergeDayRollups(local.dayRollups, remote.dayRollups);
   }
   if (local.intakeSummaries || remote.intakeSummaries) {
     winner.intakeSummaries = mergeIntakeSummaries(local.intakeSummaries, remote.intakeSummaries);
@@ -516,7 +554,7 @@ return {
   MEMBER_SCALAR_FIELDS,
   freshFieldVersions,
   RECORD_SCALAR_KEYS, REMINDER_SCALAR_KEYS, PLAN_ITEM_SCALAR_KEYS,
-  mergeIntakeLog, mergeIntakeSummaries, mergePlanSettings, isCompactedDate, monthEndStr,
+  mergeIntakeLog, mergeIntakeSummaries, mergePlanSettings, mergeDayRollups, PLAN_SCALAR_KEYS, DAY_NOTE_SCALAR_KEYS, isCompactedDate, monthEndStr,
   cloneWithFreshIds, collectLiveAttachmentIds, collectAttachmentObjects, orphanedAttachmentIds
 };
 
