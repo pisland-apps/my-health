@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v66';
+    const APP_VERSION = 'v67';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -2060,10 +2060,22 @@
       });
     }
 
+    // Basic Info card can be collapsed so Today's Plan is visible without
+    // scrolling. Default = collapsed; the choice is remembered (UI-only flag).
+    const BASIC_COLLAPSED_KEY = 'family_health_tracker_basic_collapsed';
+    function getBasicCollapsed() {
+      try { return localStorage.getItem(BASIC_COLLAPSED_KEY) !== '0'; } catch { return true; }
+    }
     function renderOverview(m, latestVitals, bmi, reminders) {
+      const basicCollapsed = getBasicCollapsed();
       return `
-        <div class="card">
-          <div class="card-title">📋 Basic Info</div>
+        <div class="card basic-card${basicCollapsed ? ' collapsed' : ''}" id="basicInfoCard">
+          <button type="button" class="card-title basic-toggle" data-toggle-basic aria-expanded="${!basicCollapsed}" aria-controls="basicInfoBody">
+            <span>📋 Basic Info</span>
+            <span class="basic-summary">${[m.height ? m.height + ' cm' : '', latestVitals.weight ? latestVitals.weight + ' kg' : '', m.blood ? escapeHtml(m.blood) : '', bmi && bmi !== '--' ? 'BMI ' + bmi : ''].filter(Boolean).join(' · ')}</span>
+            <span class="basic-chev" aria-hidden="true">▾</span>
+          </button>
+          <div class="basic-body" id="basicInfoBody">
           <div class="info-grid">
             <div class="info-item"><div class="info-label">Height</div><div class="info-value">${m.height ? m.height + ' cm' : '<span class="empty-val">—</span>'}</div></div>
             <div class="info-item"><div class="info-label">Weight</div><div class="info-value">${latestVitals.weight ? latestVitals.weight + ' kg' : '<span class="empty-val">—</span>'}</div></div>
@@ -2075,6 +2087,7 @@
           <div class="s-72724f51">
             <div class="info-label">Medical History</div>
             <div class="s-828bc405">${escapeHtml(m.history) || 'No records'}</div>
+          </div>
           </div>
         </div>
 
@@ -6175,6 +6188,15 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
     // (kept as data-attributes + delegation, rather than inline onclick="", so the
     // page's CSP can drop 'unsafe-inline' from script-src)
     document.addEventListener('click', function(e) {
+      const basicBtn = e.target.closest('[data-toggle-basic]');
+      if (basicBtn) {
+        const card = document.getElementById('basicInfoCard');
+        const collapsed = !card.classList.contains('collapsed');
+        card.classList.toggle('collapsed', collapsed);
+        basicBtn.setAttribute('aria-expanded', String(!collapsed));
+        try { localStorage.setItem(BASIC_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch {}
+        return;
+      }
       const planEl = e.target.closest(PLAN_CLICK_SELECTOR);
       if (planEl) { handlePlanClick(planEl); return; }
       const reportBtn = e.target.closest('[data-report-type]');

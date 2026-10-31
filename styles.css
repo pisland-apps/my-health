@@ -655,3 +655,13 @@
 #planItemModal .modal-actions, #planEditModal .modal-actions, #planDayModal .modal-actions { padding-bottom:16px; margin-top:8px; box-shadow:0 -8px 8px -8px rgba(0,0,0,.12); }
 .plan-day-sec .plan-sub { margin:0 0 6px; }
 .plan-day-sec .form-label { display:block; margin-top:10px; }
+
+/* Overview: collapsible Basic Info card */
+.basic-toggle { width: 100%; margin: 0; padding: 0; background: none; border: 0; color: inherit; font: inherit; font-size: 16px; font-weight: 700; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.basic-card.collapsed .basic-toggle { margin-bottom: 0; }
+.basic-summary { display: none; flex: 1; min-width: 0; font-size: 13px; font-weight: 400; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.basic-card.collapsed .basic-summary { display: block; }
+.basic-toggle > span:first-child { flex-shrink: 0; }
+.basic-chev { margin-left: auto; transition: transform .2s; }
+.basic-card.collapsed .basic-chev { transform: rotate(-90deg); }
+.basic-card.collapsed .basic-body { display: none; }
