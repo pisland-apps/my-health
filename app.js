@@ -7,8 +7,8 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v64';
-    const APP_VERSION_DATE = '2026-10-14';
+    const APP_VERSION = 'v65';
+    const APP_VERSION_DATE = '2026-10-31';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
     // done at top level, not inside init()/initAppData(), so it renders before any
@@ -1772,6 +1772,8 @@
       document.getElementById('btnDeletePlanItem').addEventListener('click', deletePlanItem);
       document.getElementById('piMode').addEventListener('change', updatePlanModeUi);
       document.getElementById('piSlots').addEventListener('change', updatePlanModeUi);
+      document.getElementById('piStart').addEventListener('change', updatePlanModeUi);
+      document.getElementById('piStartSlot').addEventListener('change', () => { planStartSlotAuto = false; });
       document.getElementById('btnCancelPlanSlots').addEventListener('click', closePlanSlotsModal);
       document.getElementById('btnSavePlanSlots').addEventListener('click', savePlanSlots);
 
@@ -2890,6 +2892,13 @@
       const s = effStart(m, it), e = effEnd(m, it);
       return !it.deletedAt && (!s || s <= dateStr) && (!e || e >= dateStr);
     }
+    // v65: on the START day, times of day before `startSlot` are not expected (a course begun at noon
+    // does not owe the morning dose). Only the item's own start date is affected.
+    function planSlotExpected(m, it, dateStr, slot) {
+      if (!it.startSlot || dateStr !== effStart(m, it)) return true;
+      const a = PLAN_SLOT_IDS.indexOf(slot), b = PLAN_SLOT_IDS.indexOf(it.startSlot);
+      return a < 0 || b < 0 || a >= b;
+    }
     function sortedPlanItems(m) {
       return live(m.planItems).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
     }
@@ -2948,7 +2957,7 @@
       const items = sortedPlanItems(m).filter(it => planItemActiveOn(m, it, dateStr));
       const groups = [], st = getPlanSettings(m);
       PLAN_SLOT_IDS.forEach(slot => {
-        const rows = items.filter(it => planItemSlots(it).includes(slot)).map(it => ({
+        const rows = items.filter(it => planItemSlots(it).includes(slot) && (planSlotExpected(m, it, dateStr, slot) || findLiveIntake(m, makeIntakeId(it.id, dateStr, slot)))).map(it => ({
           item: it, slot, entry: findLiveIntake(m, makeIntakeId(it.id, dateStr, slot)), due: planDueTime(m, it, slot)
         }));
         if (rows.length) groups.push({ slot, label: st.slotLabels[slot], time: st.slotTimes[slot], rows });
@@ -2968,14 +2977,14 @@
     // taken / expected over the last `days` COMPLETED days (slot items only)
     function planAdherence(m, it, days) {
       if (planItemIsAsNeeded(it) || planItemIsInterval(it)) return null;
-      const slots = planItemSlots(it).length;
       let expected = 0, taken = 0;
       const today = localDateStr();
       for (let i = 1; i <= days; i++) {
         const d = addDaysStr(today, -i);
         if (!planItemActiveOn(m, it, d)) continue;
-        expected += slots;
-        planItemSlots(it).forEach(s => { const e = findLiveIntake(m, makeIntakeId(it.id, d, s)); if (e && e.status === 'taken') taken++; });
+        const sl = planItemSlots(it).filter(s => planSlotExpected(m, it, d, s));
+        expected += sl.length;
+        sl.forEach(s => { const e = findLiveIntake(m, makeIntakeId(it.id, d, s)); if (e && e.status === 'taken') taken++; });
       }
       return expected ? { taken, expected } : null;
     }
@@ -3009,7 +3018,7 @@
         } else {
           planItemSlots(it).forEach(s => {
             const e = findLiveIntake(m, makeIntakeId(it.id, date, s));
-            if (e) { entries.push(e); if (e.status === 'taken') taken++; else skipped++; } else if (act) missed++;
+            if (e) { entries.push(e); if (e.status === 'taken') taken++; else skipped++; } else if (act && planSlotExpected(m, it, date, s)) missed++;
           });
         }
         if (taken || skipped || missed || entries.length) {
@@ -3311,7 +3320,7 @@
         if (p && p.source === 'rollup') body = `<div class="plan-sub">${p.taken} taken${p.skipped ? `, ${p.skipped} skipped` : ''}${p.missed ? `, ${p.missed} missed` : ''} · per-dose detail was removed after ${PLAN_KEEP_DAYS} days</div>`;
         else if (p) body = p.items.map(x => {
           const lines = x.entries.map(e => entryLine(x.it, e));
-          const slotsMissing = planItemSlots(x.it).filter(s => !x.entries.some(e => e.slot === s) && date < localDateStr() && planItemActiveOn(m, x.it, date)).map(s => `${escapeHtml(st.slotLabels[s])}: missed`);
+          const slotsMissing = planItemSlots(x.it).filter(s => !x.entries.some(e => e.slot === s) && date < localDateStr() && planItemActiveOn(m, x.it, date) && planSlotExpected(m, x.it, date, s)).map(s => `${escapeHtml(st.slotLabels[s])}: missed`);
           const ivMissing = (planItemIsInterval(x.it) && !x.entries.length && x.missed) ? ['no dose recorded'] : [];
           return `<div class="plan-sub"><strong>${escapeHtml(x.it.icon)} ${escapeHtml(x.it.name)}</strong> ${escapeHtml(planSubText(x.it))} — ${lines.concat(slotsMissing, ivMissing).join(' · ') || '—'}</div>`;
         }).join('');
@@ -3561,7 +3570,33 @@
       t.disabled = !(mode === 'slots' && n === 1);
       if (t.disabled) t.value = '';
       document.getElementById('piDateHint').textContent = document.getElementById('piPlan').value ? 'Leave a date blank to follow the plan’s dates.' : '';
+      refreshStartSlotUi();
       renderPlanPickers();
+    }
+    // "First day starts with": only offered for 2+ times of day. While untouched on a new medicine that starts
+    // today it suggests the time of day you are in now (e.g. noon at 13:15), so earlier ones are not owed.
+    let planStartSlotAuto = true;
+    function refreshStartSlotUi() {
+      const m = getCurMember(), wrap = document.getElementById('piStartSlotWrap'), sel = document.getElementById('piStartSlot');
+      if (!m || !wrap) return;
+      const mode = document.getElementById('piMode').value;
+      const slots = PLAN_SLOT_IDS.filter(id => document.querySelector(`#piSlots input[value="${id}"]`) && document.querySelector(`#piSlots input[value="${id}"]`).checked);
+      const show = mode === 'slots' && slots.length >= 2;
+      wrap.classList.toggle('s-hidden', !show);
+      if (!show) { sel.innerHTML = ''; return; }
+      const st = getPlanSettings(m);
+      const prev = sel.value;
+      sel.innerHTML = slots.map(id => `<option value="${id}">${escapeHtml(st.slotLabels[id])} ${st.slotTimes[id]}</option>`).join('');
+      let pick = slots.includes(prev) ? prev : slots[0];
+      if (planStartSlotAuto) {
+        pick = slots[0];
+        const startVal = document.getElementById('piStart').value;
+        if (startVal === localDateStr()) {
+          const now = localTimeStr();
+          slots.forEach(id => { if (st.slotTimes[id] <= now) pick = id; });
+        }
+      }
+      sel.value = pick;
     }
     function openPlanItemModal(editId, presetPlanId) {
       const m = getCurMember();
@@ -3588,6 +3623,9 @@
       document.getElementById('piFirst').disabled = hasDoses;
       document.getElementById('piFirstHint').textContent = hasDoses ? 'Doses are already logged, so the clock now runs from the last dose taken.' : '';
       document.getElementById('piStart').value = it ? (it.startDate || '') : (presetPlanId ? '' : today);
+      planStartSlotAuto = !it;
+      document.getElementById('piStartSlot').innerHTML = it && it.startSlot ? `<option value="${it.startSlot}"></option>` : '';
+      document.getElementById('piStartSlot').value = it && it.startSlot ? it.startSlot : '';
       document.getElementById('piEnd').value = it ? (it.endDate || '') : '';
       document.getElementById('piNote').value = it ? (it.note || '') : '';
       document.getElementById('piMsg').textContent = '';
@@ -3620,6 +3658,8 @@
       // (an item that was stopped before its first dose legitimately keeps endDate < startDate)
       if (startDate && endDate && endDate < startDate && !(prevItem && prevItem.endDate === endDate)) return alert('The end date is before the start date');
       const timeVal = document.getElementById('piTime').value;
+      const ssVal = document.getElementById('piStartSlot').value;
+      const startSlot = (mode === 'slots' && slots.length >= 2 && ssVal !== slots[0] && slots.includes(ssVal)) ? ssVal : '';
       let schedule = { mode, slots };
       if (mode === 'interval') {
         const hasDoses = !!(prevItem && intervalEntries(m, prevItem.id).length);
@@ -3636,7 +3676,7 @@
         time: (mode === 'slots' && slots.length === 1 && PLAN_TIME_RE.test(timeVal)) ? timeVal : '',
         icon: planDraft.icon, color: planDraft.color,
         note: document.getElementById('piNote').value.trim().slice(0, 200),
-        startDate: startDate || '', endDate: endDate || ''
+        startDate: startDate || '', endDate: endDate || '', startSlot
       };
       const ok = planCommit(m, () => {
         if (!m.planItems) m.planItems = [];
@@ -3931,6 +3971,7 @@
           note: String(it.note || '').slice(0, 200),
           order: Number.isFinite(it.order) ? it.order : 0,
           startDate: planDate(it.startDate), endDate: planDate(it.endDate),
+          startSlot: PLAN_SLOT_IDS.includes(it.startSlot) ? it.startSlot : '',
           archivedRecordId: it.archivedRecordId ? sanitizeId(it.archivedRecordId, null) : null
         };
       });

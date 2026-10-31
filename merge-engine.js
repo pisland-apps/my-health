@@ -242,7 +242,7 @@ const REMINDER_SCALAR_KEYS = ['title', 'dueDate', 'repeatMonths', 'notes'];
 // Daily Plan items. `order` (display position) and `archivedRecordId` are
 // deliberately NOT listed: two devices that only differ in those must never
 // raise a conflict (reordering is cosmetic; archiving is a one-shot helper).
-const PLAN_ITEM_SCALAR_KEYS = ['kind', 'name', 'dose', 'meal', 'schedule', 'time', 'icon', 'color', 'note', 'startDate', 'endDate', 'planId'];
+const PLAN_ITEM_SCALAR_KEYS = ['kind', 'name', 'dose', 'meal', 'schedule', 'time', 'icon', 'color', 'note', 'startDate', 'endDate', 'startSlot', 'planId'];
 // A "plan" (v63) is one course/routine that groups several medicines.
 const PLAN_SCALAR_KEYS = ['name', 'note', 'startDate', 'endDate', 'trackFrom'];
 // One short free-text note per plan per day (v64). Free text is never silently

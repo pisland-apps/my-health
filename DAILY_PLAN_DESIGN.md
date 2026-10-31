@@ -1,4 +1,4 @@
-# Daily Plan (v62 -> v64)
+# Daily Plan (v62 -> v65)
 
 Per-member plans of supplements/medicines, a per-dose log, and a calendar. Everything lives inside the
 member object, so encryption, Pack ZIP, JSON export/import and merge cover it. No new files, libraries
@@ -26,6 +26,11 @@ or CSP changes (colors are CSS classes, no inline styles).
 * Taking a dose >1h before it is due asks first. Doses belong to the local calendar day they happen (a 02:00 dose is "tomorrow").
 * The app cannot ring an alarm (pure local PWA) - the editor says so.
 * Ties in merge: live > tombstone, taken > skipped > missed, earlier takenAt.
+
+## First day (v65)
+`planItems[].startSlot` ('' or a slot id). On the item's own start date, times of day before `startSlot` are not expected:
+they are absent from Today, never counted as missed in the calendar / day sheet / 7-day count. A dose already logged
+in such a slot is still shown. New medicines starting today default to the time of day you are in now.
 
 ## Calendar
 Month grid, filter by plan. ✓ all taken · ◐ some missed/skipped · ✕ missed · 📝 note · 📎 document · dashed = planned.
