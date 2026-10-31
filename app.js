@@ -7,8 +7,8 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v65';
-    const APP_VERSION_DATE = '2026-10-31';
+    const APP_VERSION = 'v66';
+    const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
     // done at top level, not inside init()/initAppData(), so it renders before any
@@ -143,6 +143,33 @@
     let members = [];
     let currentMemberId = null;
     let currentTab = 'overview';
+
+    // ===== Remember the last-visited page (member + tab) across reloads / re-login =====
+    // Only non-sensitive UI state is stored (an opaque member id and a tab
+    // name) - no health data. Restored once, right after a successful unlock
+    // (see initAppData). Removed by "Clear all data" since it shares the
+    // family_health_tracker prefix.
+    const LAST_VIEW_KEY = 'family_health_tracker_last_view';
+    const VALID_TABS = ['overview', 'records', 'charts', 'plan', 'reminders'];
+    function saveLastView() {
+      try {
+        if (!currentMemberId) { localStorage.removeItem(LAST_VIEW_KEY); return; }
+        localStorage.setItem(LAST_VIEW_KEY, JSON.stringify({ m: currentMemberId, t: currentTab, p: planView }));
+      } catch {}
+    }
+    // Returns true if a previous page was restored.
+    function restoreLastView() {
+      try {
+        const v = JSON.parse(localStorage.getItem(LAST_VIEW_KEY) || 'null');
+        if (!v || !v.m) return false;
+        const m = members.find(x => x.id === v.m);
+        if (!m || m.deletedAt) return false;
+        currentMemberId = v.m;
+        currentTab = VALID_TABS.includes(v.t) ? v.t : 'overview';
+        planView = v.p === 'calendar' ? 'calendar' : 'list';
+        return true;
+      } catch { return false; }
+    }
     let tempAttachments = [];
     let tempBloodAttachment = null; // single attachment for the member's blood type proof
     let editingMemberId = null;   // null = adding a new member, otherwise id of member being edited
@@ -1513,6 +1540,8 @@
 
       compactPlanLogs(members);
       membersLoaded = true;
+      // Return to the page the person was last on (member + tab).
+      if (restoreLastView()) pushNavStep(); // so Back still goes to the overview first
       bindEvents();
       renderMemberList();
       renderMain();
@@ -1894,6 +1923,7 @@
     // ========== MAIN CONTENT ==========
     function renderMain() {
       const m = members.find(x => x.id === currentMemberId);
+      saveLastView();
       const main = document.getElementById('mainContent');
 
       if (!m) {
@@ -4064,7 +4094,7 @@
       if ('planArchive' in d) return archivePlanItemClick(d.planArchive);
       if ('planSettings' in d) return openPlanSlotsModal();
       if ('planOpenTab' in d) return switchTab('plan');
-      if ('planView' in d) { planView = d.planView === 'calendar' ? 'calendar' : 'list'; return planRerender(); }
+      if ('planView' in d) { planView = d.planView === 'calendar' ? 'calendar' : 'list'; saveLastView(); return planRerender(); }
       if ('planNewPlan' in d) return openPlanEditModal(null);
       if ('planEditPlan' in d) return openPlanEditModal(d.planEditPlan);
       if ('planStopPlan' in d) return stopPlan(d.planStopPlan);
