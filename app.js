@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v71';
+    const APP_VERSION = 'v72';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -3261,15 +3261,24 @@
           ? `<span class="tag tag-yellow">Due ${fmtDue(live_.dueMs)}${live_.lateMs >= 1800000 ? ' · ' + fmtDur(live_.lateMs) + ' late' : ''}</span><button type="button" class="plan-skip" data-plan-skip-iv data-item="${escapeHtml(it.id)}">Skip</button>`
           : `<span class="plan-due">Next ${fmtDue(live_.dueMs)}</span>`;
       } else if (b.live && b.live.done) right = '<span class="tag tag-green">Course complete</span>';
+      // Done for today: same layout as the time-of-day rows - the time you took it sits on the right,
+      // and "Next tomorrow ..." moves to the small line underneath.
+      let doseEntries = b.entries, nextLine = '';
+      if (doneToday) {
+        nextLine = right;
+        right = `<input type="time" class="plan-time-input" data-plan-takentime data-entry-id="${escapeHtml(lastTakenToday.id)}" value="${escapeHtml(isoToLocalTime(lastTakenToday.takenAt))}" aria-label="Time taken">`;
+        doseEntries = b.entries.filter(e => e !== lastTakenToday);
+      }
+      const dosesInner = (doseEntries.length ? doseChipsHtml(doseEntries) : '') + nextLine;
       return `
-        <div class="plan-row plan-c-${it.color}${live_ && live_.lateMs > 0 ? ' plan-pending' : ''}">
+        <div class="plan-row plan-c-${it.color}${live_ && live_.lateMs > 0 ? ' plan-pending' : ''}${doneToday ? ' plan-taken' : ''}">
           ${doneToday ? `<button type="button" class="plan-check on" data-plan-undo data-entry-id="${escapeHtml(lastTakenToday.id)}" aria-pressed="true" aria-label="Taken today - tap to undo ${escapeHtml(it.name)}">✓</button>`
             : live_ ? `<button type="button" class="plan-check" data-plan-take data-item="${escapeHtml(it.id)}" aria-label="Take ${escapeHtml(it.name)} now"></button>` : ''}
           <span class="plan-ico">${escapeHtml(it.icon)}</span>
           <div class="plan-main">
             <div class="plan-name">${escapeHtml(it.name)}${planTagHtml(m, it)}</div>
             <div class="plan-sub">${escapeHtml(planSubText(it))}${planSubText(it) ? ' · ' : ''}every ${planIntervalHours(it)} h${it.note ? ` <span class="plan-note">${escapeHtml(it.note)}</span>` : ''}</div>
-            ${b.entries.length ? `<div class="plan-doses">${doseChipsHtml(b.entries)}</div>` : ''}
+            ${dosesInner ? `<div class="plan-doses">${dosesInner}</div>` : ''}
           </div>
           <div class="plan-right">${right}</div>
         </div>`;

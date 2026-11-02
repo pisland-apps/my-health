@@ -719,3 +719,5 @@
   .plan-today-card .plan-row.plan-taken { background:transparent; }
   .plan-today-card .plan-row.plan-taken .plan-name { color:var(--text-secondary); }
 }
+
+.plan-doses { align-items:center; }
