@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v70';
+    const APP_VERSION = 'v71';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -3314,7 +3314,7 @@
           </div>`).join('')}` : '';
       const body = groupsHtml + intervalHtml + asNeededHtml;
       return `
-        <div class="card">
+        <div class="card plan-today-card">
           <div class="card-title plan-title">💊 Today <span class="plan-progress">${progress}</span>
             <span class="plan-manage">
               <button type="button" class="btn btn-secondary btn-sm" data-plan-add>+ Add</button>

@@ -695,3 +695,27 @@
   .mh-actions { flex:1 0 100%; margin-left:0; gap:8px; }
   .mh-actions .btn { flex:1; justify-content:center; white-space:nowrap; }
 }
+
+/* ===== Today card, compact phone layout (v71) ===== */
+@media (max-width:600px) {
+  .plan-today-card .plan-manage { flex:1 0 100%; margin-left:0; }
+  .plan-today-card .plan-manage .btn { flex:1; justify-content:center; white-space:nowrap; }
+  .plan-today-card .plan-group-title { margin:12px 0 4px; }
+  .plan-today-card .plan-row {
+    display:grid; grid-template-columns:30px minmax(0,1fr) auto;
+    grid-template-areas:"chk name right" "chk sub right" "chk doses doses";
+    column-gap:10px; row-gap:0; align-items:center; padding:8px 10px 8px 8px; margin-bottom:6px;
+  }
+  .plan-today-card .plan-main { display:contents; }
+  .plan-today-card .plan-check { grid-area:chk; align-self:start; width:30px; height:30px; font-size:16px; }
+  .plan-today-card .plan-ico { display:none; }
+  .plan-today-card .plan-row:not(:has(.plan-check)) .plan-ico { display:block; grid-area:chk; align-self:start; font-size:22px; text-align:center; }
+  .plan-today-card .plan-name { grid-area:name; align-self:end; font-size:15px; line-height:1.3; overflow-wrap:anywhere; }
+  .plan-today-card .plan-sub { grid-area:sub; align-self:start; margin-top:1px; line-height:1.35; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+  .plan-today-card .plan-doses { grid-area:doses; margin-top:4px; gap:4px; }
+  .plan-today-card .plan-right { grid-area:right; margin-left:0; flex-direction:column; align-items:flex-end; gap:0; text-align:right; max-width:104px; }
+  .plan-today-card .plan-skip { padding:4px 2px 0; }
+  .plan-today-card .plan-time-input { width:100px; font-size:13px; padding:3px 2px; }
+  .plan-today-card .plan-row.plan-taken { background:transparent; }
+  .plan-today-card .plan-row.plan-taken .plan-name { color:var(--text-secondary); }
+}
