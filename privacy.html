@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>My Health – Privacy Policy</title>
+</head>
+<body>
+  <main>
+    <h1>My Health – Privacy Policy</h1>
+    <p>Last updated: 2 November 2026</p>
+
+    <p>My Health is a personal health-records web app. It runs entirely in your own browser. This page explains what data the app handles and where that data goes.</p>
+
+    <h2>What the app stores</h2>
+    <p>Health records you enter (members, records, medicines, plans, notes, and attached photos or PDFs) are stored on your own device, in your browser's local storage and IndexedDB. If you turn on a passcode, this data is encrypted on your device with AES-256-GCM. The developer runs no server and cannot see, access or recover your data.</p>
+
+    <h2>Google Drive sync (optional)</h2>
+    <p>If you choose to connect Google Drive, the app asks for one permission only: <code>https://www.googleapis.com/auth/drive.appdata</code>. This lets the app create and read its own files in a hidden application-data folder in your Google Drive. It cannot see, read, change or delete any of your other Drive files.</p>
+    <ul>
+      <li>The files the app writes there are encrypted on your device before upload, using your passcode. Google stores only the encrypted file.</li>
+      <li>Files are transferred directly between your browser and Google. They never pass through any server run by the developer.</li>
+      <li>The Google access token is kept in your browser's memory only and is not stored.</li>
+    </ul>
+
+    <h2>What the app does not do</h2>
+    <ul>
+      <li>No analytics, tracking, advertising or third-party data collection.</li>
+      <li>No selling, sharing or transferring of your data to anyone.</li>
+      <li>No use of Google user data for anything other than syncing your own backup between your own devices.</li>
+    </ul>
+    <p>My Health's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+    <h2>Deleting your data</h2>
+    <ul>
+      <li>Local data: clear this site's data in your browser settings, or uninstall the app from your home screen.</li>
+      <li>Drive data: disconnect Google Drive in the app, then open your Google Account's third-party access page, select My Health, and choose to delete its hidden app data. You can also revoke access there.</li>
+    </ul>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy: <a href="mailto:veifang.lim@gmail.com">veifang.lim@gmail.com</a></p>
+
+    <hr>
+
+    <h2>隐私政策摘要（中文）</h2>
+    <p>My Health 是纯前端应用，所有健康数据只保存在你自己设备的浏览器中，设置密码后会在本机加密。开发者没有服务器，无法查看或取回你的数据。</p>
+    <p>如果你选择连接 Google Drive，应用只请求 <code>drive.appdata</code> 权限，只能读写它自己在你 Drive 隐藏应用文件夹中的文件，看不到你其他的 Drive 文件。上传前文件已在本机加密，并且直接在你的浏览器和 Google 之间传输。应用不做数据分析、不投放广告，也不会出售或分享你的任何数据。</p>
+  </main>
+</body>
+</html>
