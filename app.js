@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v67';
+    const APP_VERSION = 'v68';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -3138,6 +3138,12 @@
 
     function renderIntervalBlock(m, b) {
       const it = b.item, live_ = b.live && !b.live.done ? b.live : null;
+      // Everything due today is done (last dose taken today and the next one is a later day): keep a filled tick
+      // so the circle never looks like "not taken yet". Tapping it asks before undoing.
+      const todayStr = localDateStr();
+      const takenToday = b.entries.filter(e => e.status === 'taken');
+      const lastTakenToday = takenToday.length ? takenToday[takenToday.length - 1] : null;
+      const doneToday = !!lastTakenToday && !(live_ && live_.lateMs <= 0 && localDateStr(new Date(live_.dueMs)) <= todayStr) && !(live_ && live_.lateMs > 0);
       let right = '';
       if (live_) {
         right = live_.lateMs > 0
@@ -3146,7 +3152,8 @@
       } else if (b.live && b.live.done) right = '<span class="tag tag-green">Course complete</span>';
       return `
         <div class="plan-row plan-c-${it.color}${live_ && live_.lateMs > 0 ? ' plan-pending' : ''}">
-          ${live_ ? `<button type="button" class="plan-check" data-plan-take data-item="${escapeHtml(it.id)}" aria-label="Take ${escapeHtml(it.name)} now"></button>` : ''}
+          ${doneToday ? `<button type="button" class="plan-check on" data-plan-undo data-entry-id="${escapeHtml(lastTakenToday.id)}" aria-pressed="true" aria-label="Taken today - tap to undo ${escapeHtml(it.name)}">✓</button>`
+            : live_ ? `<button type="button" class="plan-check" data-plan-take data-item="${escapeHtml(it.id)}" aria-label="Take ${escapeHtml(it.name)} now"></button>` : ''}
           <span class="plan-ico">${escapeHtml(it.icon)}</span>
           <div class="plan-main">
             <div class="plan-name">${escapeHtml(it.name)}${planTagHtml(m, it)}</div>
@@ -3429,6 +3436,8 @@
       const m = getCurMember();
       if (!m || !PLAN_SLOT_IDS.includes(slot) || !PLAN_DATE_RE.test(date)) return;
       const id = makeIntakeId(itemId, date, slot), it = itemOf(m, itemId);
+      const cur = m.intakeLog && m.intakeLog.find(x => x.id === id);
+      if (cur && !cur.deletedAt && !confirm(`Undo ${it ? it.name : 'this dose'} - ${cur.status === 'skipped' ? 'skipped' : 'marked as taken'}?\n\nIt will go back to "not taken".`)) return;
       const ok = planCommit(m, () => {
         if (!m.intakeLog) m.intakeLog = [];
         const e = m.intakeLog.find(x => x.id === id);
@@ -3496,6 +3505,8 @@
       const m = getCurMember();
       const e = m && (m.intakeLog || []).find(x => x.id === entryId);
       if (!e) return;
+      const itU = itemOf(m, e.itemId);
+      if (!confirm(`Undo ${itU ? itU.name : 'this dose'} - ${e.status === 'skipped' ? 'skipped' : 'taken'} ${e.status === 'skipped' ? isoToLocalTime(e.dueAt) : isoToLocalTime(e.takenAt)}?\n\nIt will be removed from today's record.`)) return;
       // an undone dose takes its auto-created 'missed' fillers with it, so the clock goes back to what it was
       const ok = planCommit(m, () => {
         tombstone(e);
