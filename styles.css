@@ -665,3 +665,18 @@
 .basic-chev { margin-left: auto; transition: transform .2s; }
 .basic-card.collapsed .basic-chev { transform: rotate(-90deg); }
 .basic-card.collapsed .basic-body { display: none; }
+
+/* ===== Home medicine cabinet (v69) ===== */
+.form-group[hidden], .cab-item[hidden] { display:none !important; }
+.cab-search { margin:4px 0 10px; }
+.cab-item { border:1px solid var(--border); border-left:4px solid var(--primary); background:var(--surface); border-radius:10px; padding:12px 14px; margin-top:10px; }
+.cab-item.cab-expired { border-left-color:var(--danger); background:var(--danger-light); }
+.cab-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.cab-name { font-weight:600; font-size:16px; }
+.cab-note { margin-top:6px; font-size:14px; color:var(--text-secondary); white-space:pre-wrap; word-break:break-word; }
+.cab-thumbs { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.cab-thumb { width:64px; height:64px; padding:0; border:1px solid var(--border); border-radius:8px; background:var(--border); overflow:hidden; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:24px; }
+.cab-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.cab-thumb:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.cab-actions { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
+.cab-hint { margin-top:14px; }

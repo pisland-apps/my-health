@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v68';
+    const APP_VERSION = 'v69';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -150,7 +150,7 @@
     // (see initAppData). Removed by "Clear all data" since it shares the
     // family_health_tracker prefix.
     const LAST_VIEW_KEY = 'family_health_tracker_last_view';
-    const VALID_TABS = ['overview', 'records', 'charts', 'plan', 'reminders'];
+    const VALID_TABS = ['overview', 'records', 'charts', 'plan', 'cabinet', 'reminders'];
     function saveLastView() {
       try {
         if (!currentMemberId) { localStorage.removeItem(LAST_VIEW_KEY); return; }
@@ -468,11 +468,16 @@
       return allMembers;
     }
 
+    // Home medicine cabinet items are stored as records of this type so photos, backup, ZIP, merge and
+    // encryption all work unchanged; they are kept OUT of the health timeline, reports and calendar.
+    const CABINET_TYPE = 'Home Medicine';
+    function hRecords(m) { return live(m.records).filter(r => r.type !== CABINET_TYPE); }
+
     // Returns a NEW array of records sorted by date descending (newest first).
     // Never mutates m.records, so "latest" values stay consistent no matter
     // which tabs the user has viewed.
     function recordsByDateDesc(m) {
-      return live(m.records).sort((a, b) => new Date(b.date) - new Date(a.date));
+      return hRecords(m).sort((a, b) => new Date(b.date) - new Date(a.date));
     }
 
     // Finds the most recent record (by date) that has vitals, and returns its vitals.
@@ -1968,12 +1973,14 @@
             <button class="tab ${currentTab === 'records' ? 'active' : ''}" data-tab="records">📋 Records</button>
             <button class="tab ${currentTab === 'charts' ? 'active' : ''}" data-tab="charts">📈 Trends</button>
             <button class="tab ${currentTab === 'plan' ? 'active' : ''}" data-tab="plan">💊 Plan</button>
+            <button class="tab ${currentTab === 'cabinet' ? 'active' : ''}" data-tab="cabinet">🧰 Cabinet</button>
             <button class="tab ${currentTab === 'reminders' ? 'active' : ''}" data-tab="reminders">⏰ Reminders</button>
           </div>
           ${currentTab === 'overview' ? renderOverview(m, latestVitals, bmi, reminders) : ''}
           ${currentTab === 'records' ? renderRecords(m) : ''}
           ${currentTab === 'charts' ? renderCharts(bpRecords, m, chartHtml) : ''}
           ${currentTab === 'plan' ? renderPlanTab(m) : ''}
+          ${currentTab === 'cabinet' ? renderCabinet(m) : ''}
           ${currentTab === 'reminders' ? renderReminders(reminders, m.id) : ''}
       `;
 
@@ -2148,7 +2155,7 @@
     function renderRecords(m) {
       return `
         <div class="card">
-          <div class="card-title">📋 Health Records (${live(m.records).length})</div>
+          <div class="card-title">📋 Health Records (${hRecords(m).length})</div>
           <div class="timeline">
             ${recordsByDateDesc(m).map(r => {
               const color = r.type === 'Hospitalization' ? 'purple' : r.type === 'Illness' ? 'red' : r.type === 'Vaccine' ? 'green' : r.type === 'Medication' ? 'yellow' : 'primary';
@@ -2203,6 +2210,97 @@
           </div>
         </div>
       `;
+    }
+
+    // ========== HOME MEDICINE CABINET ==========
+    function cabinetItems(m) { return live(m.records).filter(r => r.type === CABINET_TYPE); }
+    const CAB_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    // days = whole days from today to the expiry date (negative = already expired)
+    function expiryInfo(exp) {
+      if (!exp || !CAB_DATE_RE.test(exp)) return { key: 'none', days: null, label: 'No expiry date', cls: '' };
+      const days = Math.round((new Date(exp + 'T00:00:00') - new Date(localDateStr() + 'T00:00:00')) / 86400000);
+      if (days < 0) return { key: 'expired', days, label: `Expired ${-days} day${days === -1 ? '' : 's'} ago`, cls: 'tag-red' };
+      if (days === 0) return { key: 'soon', days, label: 'Expires today', cls: 'tag-red' };
+      if (days <= 30) return { key: 'soon', days, label: `Expires in ${days} day${days === 1 ? '' : 's'}`, cls: 'tag-yellow' };
+      if (days <= 90) return { key: 'soon', days, label: `Expires ${exp}`, cls: 'tag-yellow' };
+      return { key: 'ok', days, label: `Expires ${exp}`, cls: 'tag-green' };
+    }
+    function sortedCabinet(m) {
+      return cabinetItems(m).sort((a, b) => {
+        const da = expiryInfo(a.expiry).days, db = expiryInfo(b.expiry).days;
+        if (da == null && db == null) return String(a.title).localeCompare(String(b.title));
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return da - db || String(a.title).localeCompare(String(b.title));
+      });
+    }
+    function renderCabinet(m) {
+      const items = sortedCabinet(m);
+      const exp = items.filter(i => expiryInfo(i.expiry).key === 'expired').length;
+      const soon = items.filter(i => { const e = expiryInfo(i.expiry); return e.key === 'soon' && e.days <= 30; }).length;
+      const cards = items.map(it => {
+        const ex = expiryInfo(it.expiry);
+        const atts = live(it.attachments || []);
+        const thumbs = atts.map((att, idx) => {
+          const src = att.thumb || att.data;
+          return `<button type="button" class="cab-thumb" data-cab-att="${escapeHtml(it.id)}" data-att-idx="${idx}" aria-label="Open ${escapeHtml(att.name || 'attachment')}">${att.type === 'image' && src ? `<img src="${src}" alt="">` : '<span>📄</span>'}</button>`;
+        }).join('');
+        return `
+          <div class="cab-item${ex.key === 'expired' ? ' cab-expired' : ''}" data-cab-search="${escapeHtml((it.title + ' ' + (it.details || '')).toLowerCase())}">
+            <div class="cab-head">
+              <div class="cab-name">${escapeHtml(it.title)}</div>
+              <span class="tag ${ex.cls}">${escapeHtml(ex.label)}</span>
+            </div>
+            ${it.details ? `<div class="cab-note">${escapeHtml(it.details)}</div>` : ''}
+            ${thumbs ? `<div class="cab-thumbs">${thumbs}</div>` : ''}
+            <div class="cab-actions">
+              <button type="button" class="btn btn-secondary btn-sm" data-cab-edit="${escapeHtml(it.id)}">Edit</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-cab-del="${escapeHtml(it.id)}">Delete</button>
+            </div>
+          </div>`;
+      }).join('');
+      return `
+        <div class="card">
+          <div class="card-title plan-title">🧰 Home Medicine Cabinet <span class="plan-progress">${items.length} item${items.length === 1 ? '' : 's'}${exp ? ` · ${exp} expired` : ''}${soon ? ` · ${soon} expiring soon` : ''}</span>
+            <span class="plan-manage"><button type="button" class="btn btn-primary btn-sm" data-cab-add>+ Add medicine</button></span></div>
+          ${items.length > 4 ? '<input class="form-input cab-search" id="cabSearch" type="search" placeholder="Search name or note..." aria-label="Search cabinet">' : ''}
+          ${cards || '<p class="s-9155c939">Nothing here yet. Add the medicines you keep at home (Panadol, Lomide...) with a note on what each is for, its expiry date and a photo of the box.</p>'}
+          <p class="plan-sub cab-hint">Tip: for medicines the whole family shares, keep them under one member (for example a “Home” member) so they are all in one list. Not medical advice - check the label or ask a pharmacist before taking anything.</p>
+        </div>`;
+    }
+    let cabinetMode = false;   // record modal is being used for a cabinet item
+    function setCabinetMode(on) {
+      cabinetMode = !!on;
+      const show = (id, v) => { const el = document.getElementById(id); if (el) el.hidden = !v; };
+      show('rDateGroup', !on); show('rTypeGroup', !on); show('rTagsGroup', !on); show('rExpiryGroup', on);
+      document.getElementById('rTitleLabel').textContent = on ? 'Medicine name' : 'Title';
+      document.getElementById('rDetailsLabel').textContent = on ? 'What is it for / notes' : 'Details';
+      document.getElementById('rTitle').placeholder = on ? 'e.g. Lomide' : 'e.g. Annual Physical';
+      document.getElementById('rDetails').placeholder = on ? 'e.g. Anti-diarrhoea - 1 tablet after loose stool, max 2 a day. Bought at Guardian.' : 'Symptoms, doctor notes, prescriptions...';
+      if (on) document.getElementById('vitalsSection').style.display = 'none';
+    }
+    function openCabinetModal(recordId) {
+      openModal('record', null, recordId || null);
+      setCabinetMode(true);
+      if (recordId) {
+        const m = getCurMember(), r = m && m.records.find(x => x.id === recordId);
+        document.getElementById('rExpiry').value = (r && r.expiry) || '';
+        document.querySelector('#recordModal .modal-header').textContent = 'Edit Home Medicine';
+      } else {
+        document.getElementById('rExpiry').value = '';
+        document.querySelector('#recordModal .modal-header').textContent = 'Add Home Medicine';
+        document.getElementById('btnSaveRecord').textContent = 'Save';
+      }
+    }
+    function handleCabinetClick(el) {
+      const d = el.dataset;
+      if ('cabAdd' in d) return openCabinetModal(null);
+      if ('cabEdit' in d) return openCabinetModal(d.cabEdit);
+      if ('cabDel' in d) return deleteRecord(d.cabDel);
+      if ('cabAtt' in d) {
+        const m = getCurMember(), r = m && m.records.find(x => x.id === d.cabAtt);
+        return openAttachment(r ? live(r.attachments || [])[parseInt(d.attIdx)] : null);
+      }
     }
 
     function renderCharts(bpRecords, m, chartHtml) {
@@ -2695,6 +2793,19 @@
           });
         }
       }
+
+      cabinetItems(m).forEach(it => {
+        const ex = expiryInfo(it.expiry);
+        if (ex.days == null || ex.days > 60) return;
+        reminders.push({
+          title: escapeHtml(it.title) + ' - ' + (ex.days < 0 ? 'expired' : 'expiring'),
+          dismissKey: `cab|${it.id}|${it.expiry}`,
+          date: `Home cabinet &middot; ${ex.days < 0 ? 'expired' : 'expires'} ${escapeHtml(it.expiry)}`,
+          status: ex.days < 0 ? 'overdue' : ex.days <= 30 ? 'upcoming' : 'ok',
+          statusText: ex.days < 0 ? 'Expired' : ex.days <= 30 ? 'Expiring' : 'OK',
+          icon: '🧰'
+        });
+      });
 
       live(m.customReminders || []).forEach(cr => {
         const dueDate = new Date(cr.dueDate);
@@ -3312,7 +3423,7 @@
       let status = dayStatusOf(taken, bad);
       if (isToday && bad === 0) status = 'none';                  // today is still in progress
       const hasNote = live(m.dayNotes).some(n => n.date === date && (filter === 'all' || n.planKey === filter));
-      const hasDocs = live(m.records).some(r => r.date === date && (filter === 'all' ? (r.planId || live(r.attachments).length) : r.planId === filter));
+      const hasDocs = hRecords(m).some(r => r.date === date && (filter === 'all' ? (r.planId || live(r.attachments).length) : r.planId === filter));
       const upcoming = date > today && (m.planItems || []).some(i => (filter === 'all' || planKeyOf(i) === filter) && planItemActiveOn(m, i, date));
       return { status, taken, bad, hasNote, hasDocs, upcoming, isToday };
     }
@@ -3383,7 +3494,7 @@
             <textarea class="form-input plan-note-input" id="dn_${escapeHtml(k)}" data-note-key="${escapeHtml(k)}" maxlength="${PLAN_NOTE_MAX}" rows="2" placeholder="e.g. vomited, retried at 9">${escapeHtml(noteText)}</textarea>
           </div>`;
       }).join('');
-      const recs = live(m.records).filter(r => r.date === date && (filter === 'all' || r.planId === filter));
+      const recs = hRecords(m).filter(r => r.date === date && (filter === 'all' || r.planId === filter));
       return `
         ${sections || '<p class="plan-sub">Nothing planned for this day.</p>'}
         <div class="plan-group-title">Records &amp; documents</div>
@@ -4184,6 +4295,7 @@
       }
 
       if (type === 'record') {
+        if (cabinetMode) setCabinetMode(false);   // stale state guard; openCabinetModal turns it back on
         editingRecordId = editRecordId || null;
         const header = document.querySelector('#recordModal .modal-header');
         const saveBtn = document.getElementById('btnSaveRecord');
@@ -4229,7 +4341,8 @@
       } else {
         editingRecordId = null;
         pendingRecordPlanId = null;
-        ['rDate','rTitle','rDetails','rTags','vSystolic','vDiastolic','vHeartRate','vTemp','vGlucose','vWeight'].forEach(id => document.getElementById(id).value = '');
+        ['rDate','rTitle','rDetails','rTags','rExpiry','vSystolic','vDiastolic','vHeartRate','vTemp','vGlucose','vWeight'].forEach(id => document.getElementById(id).value = '');
+        if (cabinetMode) { setCabinetMode(false); document.getElementById('rType').value = 'Checkup'; toggleVitals(); }
       }
     }
 
@@ -4292,14 +4405,15 @@
 
       const mForAttachments = members.find(x => x.id === currentMemberId);
       const priorRecordForAttachments = editingRecordId ? mForAttachments.records.find(r => r.id === editingRecordId) : null;
+      if (cabinetMode && !document.getElementById('rTitle').value.trim()) return alert('Please enter the medicine name');
       const persistedRecordAtt = await persistAttachmentsToIdb(tempAttachments);
       const record = {
         id: editingRecordId || ('r' + Date.now()),
-        date: document.getElementById('rDate').value,
-        type: document.getElementById('rType').value,
+        date: cabinetMode ? ((priorRecordForAttachments && priorRecordForAttachments.date) || localDateStr()) : document.getElementById('rDate').value,
+        type: cabinetMode ? CABINET_TYPE : document.getElementById('rType').value,
         title: document.getElementById('rTitle').value.trim() || document.getElementById('rType').value,
         details: document.getElementById('rDetails').value,
-        tags: document.getElementById('rTags').value.split(',').map(t => t.trim()).filter(t => t),
+        tags: cabinetMode ? [] : document.getElementById('rTags').value.split(',').map(t => t.trim()).filter(t => t),
         vitals: {},
         attachments: syncStampAttachments(priorRecordForAttachments ? priorRecordForAttachments.attachments : [], persistedRecordAtt)
       };
@@ -4317,6 +4431,7 @@
       const vWeight = document.getElementById('vWeight').value;
       if (vWeight) record.vitals.weight = parseFloat(vWeight);
 
+      if (cabinetMode) { const ex = document.getElementById('rExpiry').value; if (CAB_DATE_RE.test(ex)) record.expiry = ex; }
       const linkPlan = priorRecordForAttachments ? priorRecordForAttachments.planId : pendingRecordPlanId;
       if (linkPlan) record.planId = linkPlan;   // Daily Plan: receipt/report linked to a plan
       if (Object.keys(record.vitals).length === 0) delete record.vitals;
@@ -4360,7 +4475,7 @@
       if (!m) return;
       const r = m.records.find(x => x.id === recordId);
       if (!r) return;
-      if (!confirm(`Delete this record ("${r.title}", ${r.date})? This cannot be undone.`)) return;
+      if (!confirm(r.type === CABINET_TYPE ? `Remove "${r.title}" from the cabinet? This cannot be undone.` : `Delete this record ("${r.title}", ${r.date})? This cannot be undone.`)) return;
 
       const previousRecords = [...m.records];
       const priorMeta = { deletedAt: r.deletedAt, version: r.version, updatedAt: r.updatedAt };
@@ -4402,13 +4517,13 @@
     // modal can list only the attachments that are actually relevant to
     // that specific report.
     const reportMeta = {
-      summary:    { label: 'Health Summary', printFn: printHealthSummary,   recordsFor: m => live(m.records) },
+      summary:    { label: 'Health Summary', printFn: printHealthSummary,   recordsFor: m => hRecords(m) },
       vaccine:    { label: 'Vaccine Record', printFn: printVaccineCard,     recordsFor: m => live(m.records).filter(r => r.type === 'Vaccine') },
       medication: { label: 'Medication List', printFn: printMedicationList, recordsFor: m => live(m.records).filter(r => r.type === 'Medication') },
       lab:        { label: 'Lab Results', printFn: printLabSummary,         recordsFor: m => live(m.records).filter(r => r.type === 'Lab Test' || r.type === 'Checkup') },
       bp:         { label: 'BP Log', printFn: printBPLog,                   recordsFor: m => live(m.records).filter(r => r.vitals?.systolic) },
       growth:     { label: 'Growth Chart', printFn: printGrowthChart,       recordsFor: m => live(m.records).filter(r => r.vitals?.weight) },
-      annual:     { label: 'Annual Report', printFn: printAnnualReport,     recordsFor: m => { const y = String(new Date().getFullYear()); return live(m.records).filter(r => r.date && r.date.startsWith(y)); } }
+      annual:     { label: 'Annual Report', printFn: printAnnualReport,     recordsFor: m => { const y = String(new Date().getFullYear()); return hRecords(m).filter(r => r.date && r.date.startsWith(y)); } }
     };
 
     let reportPreviewState = null; // { reportKey, memberId, attachments: [{key, record, att}] }
@@ -4659,7 +4774,7 @@
       const bmi = calcBmi(m.height, latest.weight);
       const bloodAttData = await resolveAttachmentData(m.bloodTypeAttachment);
       const isPdfAtt = bloodAttData && (m.bloodTypeAttachment.type !== 'image');
-      const { html: attachmentsHtml, pdfJobs } = await buildAttachmentsSectionHtml(live(m.records), selectedAttachmentKeys);
+      const { html: attachmentsHtml, pdfJobs } = await buildAttachmentsSectionHtml(hRecords(m), selectedAttachmentKeys);
 
       const recordsHtml = recordsByDateDesc(m).map(r => `
         <tr>
@@ -4698,7 +4813,7 @@
             <div class="pr-box"><div class="pr-box-label">Glucose</div><div class="pr-box-value">${latest.glucose || '--'} mmol/L</div></div>
           </div>
 
-          <h2 class="pr-h2">All Records (${live(m.records).length})</h2>
+          <h2 class="pr-h2">All Records (${hRecords(m).length})</h2>
           <table class="pr-table">
             <tr><th>Date</th><th>Type</th><th>Title</th><th>Details</th></tr>
             ${recordsHtml || '<tr><td colspan="4" class="pr-empty">No records</td></tr>'}
@@ -4958,14 +5073,14 @@
       const age = m.birth ? Math.floor((new Date() - new Date(m.birth)) / 365.25 / 24 / 60 / 60 / 1000) : '?';
       const year = new Date().getFullYear();
 
-      const yearRecords = live(m.records).filter(r => r.date.startsWith(year.toString()));
+      const yearRecords = hRecords(m).filter(r => r.date.startsWith(year.toString()));
       const checkups = yearRecords.filter(r => r.type === 'Checkup').length;
       const vaccines = yearRecords.filter(r => r.type === 'Vaccine').length;
       const illnesses = yearRecords.filter(r => r.type === 'Illness').length;
       const medications = yearRecords.filter(r => r.type === 'Medication').length;
 
       const typeBreakdown = {};
-      live(m.records).forEach(r => {
+      hRecords(m).forEach(r => {
         typeBreakdown[r.type] = (typeBreakdown[r.type] || 0) + 1;
       });
 
@@ -4993,7 +5108,7 @@
           <table class="pr-table">
             <tr><th>Record Type</th><th>Total Count</th></tr>
             ${breakdownRows}
-            <tr class="pr-table-total-row"><td>Total Records</td><td>${live(m.records).length}</td></tr>
+            <tr class="pr-table-total-row"><td>Total Records</td><td>${hRecords(m).length}</td></tr>
           </table>
 
           <div class="pr-goals">
@@ -5301,6 +5416,7 @@
             tags: Array.isArray(r.tags) ? r.tags : [],
             vitals: sanitizeVitals(r.vitals),
             planId: r.planId ? sanitizeId(r.planId, null) || undefined : undefined,
+            expiry: typeof r.expiry === 'string' && CAB_DATE_RE.test(r.expiry) ? r.expiry : undefined,
             attachments: Array.isArray(r.attachments) ? sanitizeIdsDeep(r.attachments) : undefined
           })) : []
         };
@@ -6208,6 +6324,8 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
         try { localStorage.setItem(BASIC_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch {}
         return;
       }
+      const cabEl = e.target.closest('[data-cab-add],[data-cab-edit],[data-cab-del],[data-cab-att]');
+      if (cabEl) { handleCabinetClick(cabEl); return; }
       const planEl = e.target.closest(PLAN_CLICK_SELECTOR);
       if (planEl) { handlePlanClick(planEl); return; }
       const reportBtn = e.target.closest('[data-report-type]');
@@ -6221,6 +6339,13 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
         openReminderModal(reminderBtn.dataset.openReminderModal);
         return;
       }
+    });
+
+    // Cabinet: live search box (hides non-matching cards, no re-render)
+    document.addEventListener('input', function(e) {
+      if (!e.target || e.target.id !== 'cabSearch') return;
+      const q = e.target.value.trim().toLowerCase();
+      document.querySelectorAll('.cab-item').forEach(c => { c.hidden = !!q && !(c.dataset.cabSearch || '').includes(q); });
     });
 
     // Daily Plan: editing the time a dose was taken (native <input type="time">)
