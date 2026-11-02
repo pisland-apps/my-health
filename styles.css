@@ -680,3 +680,18 @@
 .cab-thumb:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .cab-actions { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
 .cab-hint { margin-top:14px; }
+
+/* ===== Member header on phones (v70): avatar + name/tags on top, buttons in their own row ===== */
+.mh-avatar { flex-shrink:0; }
+.mh-info { min-width:0; }
+.mh-name { line-height:1.25; overflow-wrap:anywhere; }
+.mh-tags { flex-wrap:wrap; }
+.mh-tags .tag { white-space:nowrap; }
+@media (max-width:600px) {
+  .mh-head { flex-wrap:wrap; align-items:flex-start; gap:12px; }
+  .mh-name { font-size:20px; }
+  .mh-info { flex:1 1 0; }
+  .mh-tags .tag { white-space:normal; }
+  .mh-actions { flex:1 0 100%; margin-left:0; gap:8px; }
+  .mh-actions .btn { flex:1; justify-content:center; white-space:nowrap; }
+}

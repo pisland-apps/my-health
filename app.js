@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v69';
+    const APP_VERSION = 'v70';
     const APP_VERSION_DATE = '2026-11-01';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1952,17 +1952,17 @@
       const reminders = generateReminders(m);
 
       main.innerHTML = `
-        <div class="s-a251dbd6">
-          <div class="s-f18fd9a2">${escapeHtml(m.name[0])}</div>
-          <div>
-            <h2 class="s-738e228b">${escapeHtml(m.name)}${m.nameZh ? ' <span class="s-5ea608c5">' + escapeHtml(m.nameZh) + '</span>' : ''} <span class="s-605d40a3">${escapeHtml(m.gender)} &middot; ${age}y</span></h2>
-            <div class="s-da0fa578">
+        <div class="s-a251dbd6 mh-head">
+          <div class="s-f18fd9a2 mh-avatar">${escapeHtml(m.name[0])}</div>
+          <div class="mh-info">
+            <h2 class="s-738e228b mh-name">${escapeHtml(m.name)}${m.nameZh ? ' <span class="s-5ea608c5">' + escapeHtml(m.nameZh) + '</span>' : ''} <span class="s-605d40a3">${escapeHtml(m.gender)} &middot; ${age}y</span></h2>
+            <div class="s-da0fa578 mh-tags">
               <span class="tag tag-green s-58aba575" ${m.bloodTypeAttachment ? `id="btnViewBloodAttachment" title="View attached blood type test report"` : ''}>Type ${escapeHtml(m.blood)}${m.bloodTypeAttachment ? ' 📎' : ''}</span>
               ${m.allergies !== 'None' && m.allergies ? `<span class="tag tag-red">⚠️ Allergy: ${escapeHtml(m.allergies)}</span>` : ''}
               ${bmi !== '--' ? `<span class="tag tag-yellow">BMI ${bmi}</span>` : ''}
             </div>
           </div>
-          <div class="s-0cc925bc">
+          <div class="s-0cc925bc mh-actions">
             <button class="btn btn-secondary btn-sm" id="btnEditMember">✏️ Edit Info</button>
             <button class="btn btn-danger btn-sm" id="btnEmergency">🚨 Emergency Card</button>
           </div>
