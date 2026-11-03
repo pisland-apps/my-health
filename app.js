@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v73';
+    const APP_VERSION = 'v74';
     const APP_VERSION_DATE = '2026-11-02';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -2217,7 +2217,24 @@
     }
 
     // ========== HOME MEDICINE CABINET ==========
-    function cabinetItems(m) { return live(m.records).filter(r => r.type === CABINET_TYPE); }
+    // v74: a medicine can be shared with the whole family. It is still ONE record that lives in
+    // its owner's records (so sync/merge/export/attachments work exactly as before); every other
+    // member's Cabinet simply also lists the shared medicines of the other (live) members.
+    // Not shared (no `shared` flag) = only in the owner's own cabinet, as it always was.
+    function ownCabinetItems(m) { return live(m.records).filter(r => r.type === CABINET_TYPE); }
+    function sharedCabinetFromOthers(m) {
+      const out = [];
+      live(members).forEach(o => {
+        if (o.id === m.id) return;
+        ownCabinetItems(o).forEach(r => { if (r.shared === true) out.push(r); });
+      });
+      return out;
+    }
+    function cabinetItems(m) { return ownCabinetItems(m).concat(sharedCabinetFromOthers(m)); }
+    // The (live) member whose records hold this cabinet item, or null.
+    function cabinetOwnerOf(recordId) {
+      return live(members).find(o => ownCabinetItems(o).some(r => r.id === recordId)) || null;
+    }
     const CAB_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
     // days = whole days from today to the expiry date (negative = already expired)
     function expiryInfo(exp) {
@@ -2240,21 +2257,28 @@
     }
     function renderCabinet(m) {
       const items = sortedCabinet(m);
+      const ownerOf = new Map();
+      live(members).forEach(o => ownCabinetItems(o).forEach(r => ownerOf.set(r.id, o)));
       const exp = items.filter(i => expiryInfo(i.expiry).key === 'expired').length;
       const soon = items.filter(i => { const e = expiryInfo(i.expiry); return e.key === 'soon' && e.days <= 30; }).length;
-      const cards = items.map(it => {
+      const card = (it) => {
         const ex = expiryInfo(it.expiry);
+        const owner = ownerOf.get(it.id);
         const atts = live(it.attachments || []);
         const thumbs = atts.map((att, idx) => {
           const src = att.thumb || att.data;
           return `<button type="button" class="cab-thumb" data-cab-att="${escapeHtml(it.id)}" data-att-idx="${idx}" aria-label="Open ${escapeHtml(att.name || 'attachment')}">${att.type === 'image' && src ? `<img src="${src}" alt="">` : '<span>📄</span>'}</button>`;
         }).join('');
+        const badge = it.shared === true
+          ? `<span class="cab-share-badge">👪 ${owner && owner.id !== m.id ? 'Shared by ' + escapeHtml(owner.name) : 'Shared'}</span>`
+          : '';
         return `
           <div class="cab-item${ex.key === 'expired' ? ' cab-expired' : ''}" data-cab-search="${escapeHtml((it.title + ' ' + (it.details || '')).toLowerCase())}">
             <div class="cab-head">
               <div class="cab-name">${escapeHtml(it.title)}</div>
               <span class="tag ${ex.cls}">${escapeHtml(ex.label)}</span>
             </div>
+            ${badge ? `<div class="cab-badges">${badge}</div>` : ''}
             ${it.details ? `<div class="cab-note">${escapeHtml(it.details)}</div>` : ''}
             ${thumbs ? `<div class="cab-thumbs">${thumbs}</div>` : ''}
             <div class="cab-actions">
@@ -2262,32 +2286,52 @@
               <button type="button" class="btn btn-secondary btn-sm" data-cab-del="${escapeHtml(it.id)}">Delete</button>
             </div>
           </div>`;
-      }).join('');
+      };
+      const sharedItems = items.filter(i => i.shared === true);
+      const privateItems = items.filter(i => i.shared !== true);
+      const group = (title, list, empty) => `
+        <div class="cab-group">
+          <div class="cab-section">${title} <span class="plan-progress">${list.length}</span></div>
+          ${list.length ? list.map(card).join('') : `<p class="s-9155c939">${empty}</p>`}
+        </div>`;
       return `
         <div class="card">
           <div class="card-title plan-title">🧰 Home Medicine Cabinet <span class="plan-progress">${items.length} item${items.length === 1 ? '' : 's'}${exp ? ` · ${exp} expired` : ''}${soon ? ` · ${soon} expiring soon` : ''}</span>
             <span class="plan-manage"><button type="button" class="btn btn-primary btn-sm" data-cab-add>+ Add medicine</button></span></div>
           ${items.length > 4 ? '<input class="form-input cab-search" id="cabSearch" type="search" placeholder="Search name or note..." aria-label="Search cabinet">' : ''}
-          ${cards || '<p class="s-9155c939">Nothing here yet. Add the medicines you keep at home (Panadol, Lomide...) with a note on what each is for, its expiry date and a photo of the box.</p>'}
-          <p class="plan-sub cab-hint">Tip: for medicines the whole family shares, keep them under one member (for example a “Home” member) so they are all in one list. Not medical advice - check the label or ask a pharmacist before taking anything.</p>
+          ${group('👪 Shared with the whole family', sharedItems, 'Nothing shared yet. Switch on “Share with the whole family” when you add or edit a medicine, and everyone can see and edit it.')}
+          ${group('🔒 Only for ' + escapeHtml(m.name), privateItems, 'Nothing private here yet. Medicines that are not shared stay in this member’s own cabinet.')}
+          <p class="plan-sub cab-hint">Shared medicines show in every member’s Cabinet and anyone can edit them; only the member who added one can stop sharing it. Not medical advice - check the label or ask a pharmacist before taking anything.</p>
         </div>`;
     }
     let cabinetMode = false;   // record modal is being used for a cabinet item
     function setCabinetMode(on) {
       cabinetMode = !!on;
       const show = (id, v) => { const el = document.getElementById(id); if (el) el.hidden = !v; };
-      show('rDateGroup', !on); show('rTypeGroup', !on); show('rTagsGroup', !on); show('rExpiryGroup', on);
+      show('rDateGroup', !on); show('rTypeGroup', !on); show('rTagsGroup', !on); show('rExpiryGroup', on); show('rShareGroup', on);
       document.getElementById('rTitleLabel').textContent = on ? 'Medicine name' : 'Title';
       document.getElementById('rDetailsLabel').textContent = on ? 'What is it for / notes' : 'Details';
       document.getElementById('rTitle').placeholder = on ? 'e.g. Lomide' : 'e.g. Annual Physical';
       document.getElementById('rDetails').placeholder = on ? 'e.g. Anti-diarrhoea - 1 tablet after loose stool, max 2 a day. Bought at Guardian.' : 'Symptoms, doctor notes, prescriptions...';
       if (on) document.getElementById('vitalsSection').style.display = 'none';
     }
+    let pendingCabinetOwnerId = null;   // set by openCabinetModal, consumed by openModal('record')
+    let editingRecordOwnerId = null;    // member whose records hold the item being edited (a shared item may belong to someone else)
     function openCabinetModal(recordId) {
+      const owner = recordId ? cabinetOwnerOf(recordId) : null;
+      pendingCabinetOwnerId = owner ? owner.id : null;
       openModal('record', null, recordId || null);
       setCabinetMode(true);
+      const r = owner && owner.records.find(x => x.id === recordId);
+      const mine = !owner || owner.id === currentMemberId;
+      const sharedEl = document.getElementById('rShared');
+      sharedEl.checked = !!(r && r.shared === true);   // new medicines start private
+      sharedEl.disabled = !mine;                         // only the owner can stop sharing
+      const cur = getCurMember();
+      document.getElementById('rSharedNote').textContent = mine
+        ? `On: everyone in the family can see and edit it. Off: it stays only in ${cur ? cur.name : 'this member'}'s own cabinet.`
+        : `Shared by ${owner.name}. Anyone can edit it, but only ${owner.name} can stop sharing it.`;
       if (recordId) {
-        const m = getCurMember(), r = m && m.records.find(x => x.id === recordId);
         document.getElementById('rExpiry').value = (r && r.expiry) || '';
         document.querySelector('#recordModal .modal-header').textContent = 'Edit Home Medicine';
       } else {
@@ -2302,7 +2346,7 @@
       if ('cabEdit' in d) return openCabinetModal(d.cabEdit);
       if ('cabDel' in d) return deleteRecord(d.cabDel);
       if ('cabAtt' in d) {
-        const m = getCurMember(), r = m && m.records.find(x => x.id === d.cabAtt);
+        const o = cabinetOwnerOf(d.cabAtt), r = o && o.records.find(x => x.id === d.cabAtt);
         return openAttachment(r ? live(r.attachments || [])[parseInt(d.attIdx)] : null);
       }
     }
@@ -4310,9 +4354,10 @@
       if (type === 'record') {
         if (cabinetMode) setCabinetMode(false);   // stale state guard; openCabinetModal turns it back on
         editingRecordId = editRecordId || null;
+        editingRecordOwnerId = pendingCabinetOwnerId; pendingCabinetOwnerId = null;
         const header = document.querySelector('#recordModal .modal-header');
         const saveBtn = document.getElementById('btnSaveRecord');
-        const m = members.find(x => x.id === currentMemberId);
+        const m = members.find(x => x.id === (editingRecordOwnerId || currentMemberId));
         const record = editingRecordId ? m?.records.find(r => r.id === editingRecordId) : null;
 
         if (record) {
@@ -4353,6 +4398,8 @@
         document.getElementById('bloodAttachmentPreview').innerHTML = '';
       } else {
         editingRecordId = null;
+        editingRecordOwnerId = null;
+        document.getElementById('rShared').checked = false; document.getElementById('rShared').disabled = false;
         pendingRecordPlanId = null;
         ['rDate','rTitle','rDetails','rTags','rExpiry','vSystolic','vDiastolic','vHeartRate','vTemp','vGlucose','vWeight'].forEach(id => document.getElementById(id).value = '');
         if (cabinetMode) { setCabinetMode(false); document.getElementById('rType').value = 'Checkup'; toggleVitals(); }
@@ -4416,7 +4463,8 @@
       if (!currentMemberId) return alert('Please select a member first');
       if (!(await ensureUnlocked())) return;
 
-      const mForAttachments = members.find(x => x.id === currentMemberId);
+      const ownerId = editingRecordOwnerId || currentMemberId;   // a shared medicine is saved into its owner's records
+      const mForAttachments = members.find(x => x.id === ownerId);
       const priorRecordForAttachments = editingRecordId ? mForAttachments.records.find(r => r.id === editingRecordId) : null;
       if (cabinetMode && !document.getElementById('rTitle').value.trim()) return alert('Please enter the medicine name');
       const persistedRecordAtt = await persistAttachmentsToIdb(tempAttachments);
@@ -4444,13 +4492,16 @@
       const vWeight = document.getElementById('vWeight').value;
       if (vWeight) record.vitals.weight = parseFloat(vWeight);
 
-      if (cabinetMode) { const ex = document.getElementById('rExpiry').value; if (CAB_DATE_RE.test(ex)) record.expiry = ex; }
+      if (cabinetMode) {
+        const ex = document.getElementById('rExpiry').value; if (CAB_DATE_RE.test(ex)) record.expiry = ex;
+        if (document.getElementById('rShared').checked) record.shared = true;   // omitted = private
+      }
       const linkPlan = priorRecordForAttachments ? priorRecordForAttachments.planId : pendingRecordPlanId;
       if (linkPlan) record.planId = linkPlan;   // Daily Plan: receipt/report linked to a plan
       if (Object.keys(record.vitals).length === 0) delete record.vitals;
       if (record.attachments.length === 0) delete record.attachments; // fine: syncStampAttachments never returns an empty array if a tombstone exists
 
-      const m = members.find(x => x.id === currentMemberId);
+      const m = members.find(x => x.id === ownerId);
       const existingIdx = editingRecordId ? m.records.findIndex(r => r.id === editingRecordId) : -1;
 
       // Keep a rollback copy in case saveData() fails, so we never lose the previous state.
@@ -4484,11 +4535,11 @@
 
     // ========== DELETE RECORD ==========
     async function deleteRecord(recordId) {
-      const m = members.find(x => x.id === currentMemberId);
+      const m = cabinetOwnerOf(recordId) || members.find(x => x.id === currentMemberId); // v74: a shared medicine can live under another member
       if (!m) return;
       const r = m.records.find(x => x.id === recordId);
       if (!r) return;
-      if (!confirm(r.type === CABINET_TYPE ? `Remove "${r.title}" from the cabinet? This cannot be undone.` : `Delete this record ("${r.title}", ${r.date})? This cannot be undone.`)) return;
+      if (!confirm(r.type === CABINET_TYPE ? (r.shared === true ? `Remove "${r.title}" from the family cabinet? It disappears for everyone. This cannot be undone.` : `Remove "${r.title}" from the cabinet? This cannot be undone.`) : `Delete this record ("${r.title}", ${r.date})? This cannot be undone.`)) return;
 
       const previousRecords = [...m.records];
       const priorMeta = { deletedAt: r.deletedAt, version: r.version, updatedAt: r.updatedAt };
@@ -4507,7 +4558,9 @@
     async function deleteMember(memberId) {
       const m = members.find(x => x.id === memberId);
       if (!m) return;
-      if (!confirm(`Delete "${m.name}" and all their records? This cannot be undone.`)) return;
+      const sharedMeds = ownCabinetItems(m).filter(r => r.shared === true).length;
+      if (!confirm(`Delete "${m.name}" and all their records? This cannot be undone.` +
+        (sharedMeds ? `\n\n${m.name} also added ${sharedMeds} medicine${sharedMeds === 1 ? '' : 's'} shared with the family cabinet. ${sharedMeds === 1 ? 'It' : 'They'} will be removed for everyone too.` : ''))) return;
 
       const previousMembers = members;
       const priorMeta = { deletedAt: m.deletedAt, version: m.version, updatedAt: m.updatedAt };
@@ -5430,6 +5483,7 @@
             vitals: sanitizeVitals(r.vitals),
             planId: r.planId ? sanitizeId(r.planId, null) || undefined : undefined,
             expiry: typeof r.expiry === 'string' && CAB_DATE_RE.test(r.expiry) ? r.expiry : undefined,
+            shared: r.shared === true ? true : undefined,
             attachments: Array.isArray(r.attachments) ? sanitizeIdsDeep(r.attachments) : undefined
           })) : []
         };
@@ -6359,6 +6413,7 @@ ${encrypt ? `- Full encryption: the backup JSON AND every file inside attachment
       if (!e.target || e.target.id !== 'cabSearch') return;
       const q = e.target.value.trim().toLowerCase();
       document.querySelectorAll('.cab-item').forEach(c => { c.hidden = !!q && !(c.dataset.cabSearch || '').includes(q); });
+      document.querySelectorAll('.cab-group').forEach(g => { g.hidden = !!q && !!g.querySelector('.cab-item') && !g.querySelector('.cab-item:not([hidden])'); });
     });
 
     // Daily Plan: editing the time a dose was taken (native <input type="time">)

@@ -237,7 +237,7 @@ function mergeMemberFields(winner, local, remote, conflicts, path) {
 
 // ---------- scalar keys (children such as attachments are merged
 // separately - design 1.7) ----------
-const RECORD_SCALAR_KEYS = ['date', 'type', 'title', 'details', 'tags', 'vitals', 'expiry'];
+const RECORD_SCALAR_KEYS = ['date', 'type', 'title', 'details', 'tags', 'vitals', 'expiry', 'shared'];
 const REMINDER_SCALAR_KEYS = ['title', 'dueDate', 'repeatMonths', 'notes'];
 // Daily Plan items. `order` (display position) and `archivedRecordId` are
 // deliberately NOT listed: two devices that only differ in those must never

@@ -680,6 +680,12 @@
 .cab-thumb:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .cab-actions { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
 .cab-hint { margin-top:14px; }
+.cab-section { margin-top:18px; font-weight:600; font-size:14px; color:var(--text-secondary); }
+.cab-group[hidden] { display:none; }
+.cab-badges { margin-top:6px; }
+.cab-share-badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:500; background:var(--primary-light); color:var(--primary); }
+.cab-share-label { font-size:14px; font-weight:500; }
+.cab-share-note { margin-top:6px; font-size:12px; color:var(--text-secondary); }
 
 /* ===== Member header on phones (v70): avatar + name/tags on top, buttons in their own row ===== */
 .mh-avatar { flex-shrink:0; }

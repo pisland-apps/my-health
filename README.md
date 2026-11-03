@@ -91,3 +91,14 @@ Settings -> **Google Drive sync** keeps several devices in step through the pers
 - OAuth client: web client "My Health Web" in Google Cloud project `my-health` (consent screen published, only a non-sensitive scope, no verification needed). Authorized JavaScript origin must equal the site origin.
 - Code: `drive-sync.js` (loaded after `app.js`), hooks in `app.js` (`FHSDrive.*`), `drive-sync.test.js` (`node drive-sync.test.js`, two simulated devices + fake Drive).
 - CSP / headers: Google hosts added for the sign-in script and Drive API; `Cross-Origin-Opener-Policy` is `same-origin-allow-popups` because the Google sign-in pop-up needs it. `privacy.html` is the privacy policy linked from the Google consent screen.
+
+## v74 - Shared medicines in the Home Medicine Cabinet
+
+Each medicine has a **Share with the whole family** switch (Cabinet -> + Add medicine / Edit).
+
+- Off (default): the medicine stays in that member's own cabinet, exactly as before.
+- On: it also shows in every other member's Cabinet, under "Shared with the whole family", labelled "Shared by <owner>". Anyone can edit or delete it; only the member who added it can switch sharing off.
+- Still ONE record, kept in its owner's `records` (`record.shared === true`; omitted = private). So sync, merge (`shared` is in `RECORD_SCALAR_KEYS`), export/import, attachments and Drive sync need no special handling. No "Home" member needed any more - existing items can simply be switched to shared.
+- Expiry reminders for shared medicines appear for every member (each member dismisses them separately).
+- Deleting a member also removes the medicines they shared; the confirmation says so.
+- Tests: `node cabinet-share.test.js`.
