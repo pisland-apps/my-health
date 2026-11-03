@@ -102,3 +102,7 @@ Each medicine has a **Share with the whole family** switch (Cabinet -> + Add med
 - Expiry reminders for shared medicines appear for every member (each member dismisses them separately).
 - Deleting a member also removes the medicines they shared; the confirmation says so.
 - Tests: `node cabinet-share.test.js`.
+
+## v75 - Sync status under the title
+
+When Google Drive is connected, a small line under "My Health" shows the state: `☁️ Synced 11:39 AM`, `☁️ Syncing...`, `🔒 Unlock to sync`, or a red `⚠️ ...` (sign in again / reconnect / sync problem / passcode off). Tap it to open Settings -> Google Drive sync. Hidden when Drive is not connected.

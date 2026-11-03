@@ -95,7 +95,7 @@ function makeDevice(drive, opts) {
   const ls = new Map(Object.entries(opts.seed || {})); // localStorage content from "before the page loaded"
   const idb = new Map();
   const els = {};
-  const el = (id) => els[id] = els[id] || { id, style: {}, value: '', textContent: '', disabled: false, listeners: {}, classList: { add() {}, remove() {} }, addEventListener(t, f) { this.listeners[t] = f; }, focus() {} };
+  const el = (id) => els[id] = els[id] || { id, style: {}, value: '', textContent: '', disabled: false, listeners: {}, classList: { add() {}, remove() {}, toggle() {} }, addEventListener(t, f) { this.listeners[t] = f; }, focus() {} };
   const dev = { drive, ls, idb, els, conflictQueue: [], renders: 0, email: opts.email, alerts: [] };
   const sandbox = {
     console, setTimeout, clearTimeout, setInterval: () => 0, Blob, URL, TextEncoder, TextDecoder, structuredClone,
@@ -198,6 +198,7 @@ const PASS = 'correct horse';
   const blob = [...drive.files('me@example.com').values()].map(f => f.content).join('');
   ok('nothing readable in Drive (encrypted)', !/Dad|Checkup|PHOTO-BYTES/.test(blob));
   ok('A status ok', A.state().status.state === 'ok', JSON.stringify(A.state().status));
+  ok('header badge shows "Synced <time>"', /^☁️ Synced /.test(A.el('driveSyncBadge').textContent) && A.el('driveSyncBadge').hidden === false, A.el('driveSyncBadge').textContent);
 
   // ===== 2. second device (only sample data) connects with the same passcode =====
   const B = makeDevice(drive, { email: 'me@example.com' });
@@ -286,12 +287,14 @@ const PASS = 'correct horse';
   const before10 = drive.files('other@example.com').size;
   await W.sync({ interactive: true }); await wait(50);
   ok('wrong Google account: sync refused', W.state().status.state === 'auth', JSON.stringify(W.state().status));
+  ok('wrong Google account: badge warns', /Sign in to sync/.test(W.el('driveSyncBadge').textContent), W.el('driveSyncBadge').textContent);
   ok('wrong Google account: nothing written to that account', drive.files('other@example.com').size === before10);
 
   // ===== 11. disconnect (and delete the Drive copy) =====
   await A.unlock(PASS).catch(() => {});
   await A.click('btnDriveDisconnect'); await wait(200);
   ok('disconnect clears the connection', !A.state().cfg.connected);
+  ok('header badge is hidden again after disconnect', A.el('driveSyncBadge').hidden === true);
   ok('disconnect + delete emptied the Drive copy', drive.files('me@example.com').size === 0, 'left: ' + [...drive.files('me@example.com').values()].map(f => f.name).join());
 
   console.log(`\n${pass} passed, ${fail} failed`);

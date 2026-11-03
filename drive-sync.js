@@ -460,7 +460,11 @@
   }
 
   // ---------- hooks called from app.js ----------
-  function markDirty() { if (!applying && cfg.connected) syncSoon(DEBOUNCE_MS); }
+  function markDirty() {
+    if (applying || !cfg.connected) return;
+    if (status.state === 'ok' || status.state === 'off') setStatus('pending', 'Changes will sync in a few seconds.');
+    syncSoon(DEBOUNCE_MS);
+  }
   function onPasscode(passcode) { // right after a successful cryptoSetup / cryptoUnlock
     if (!cfg.connected || !cfg.salt) return;
     keyPromise = deriveKeyFromPasscode(passcode, cfg.salt, PBKDF2_CONFIGS[cfg.iterVer || PBKDF2_ITER_VERSION])
@@ -474,7 +478,35 @@
 
   // ---------- Settings UI ----------
   function setStatus(state, text) { status = { state: state, text: text }; renderUI(); }
+  function clockText(ts) {
+    const d = new Date(ts), now = new Date();
+    if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  // The small status line under the app title, e.g. "☁️ Synced 11:39 AM". Tap = open Settings.
+  function renderBadge() {
+    const b = $('driveSyncBadge');
+    if (!b) return;
+    if (!cfg.connected) { b.hidden = true; return; }
+    const synced = cfg.lastSyncAt ? '☁️ Synced ' + clockText(cfg.lastSyncAt) : '☁️ Not synced yet';
+    let text = synced, warn = false;
+    switch (status.state) {
+      case 'syncing': case 'pending': text = '☁️ Syncing...'; break;
+      case 'blocked': text = '☁️ Waiting to sync...'; break;
+      case 'locked': text = '🔒 Unlock to sync'; break;
+      case 'warn': text = synced + ' · ⚠️ check Settings'; warn = true; break;
+      case 'auth': text = '⚠️ Sign in to sync'; warn = true; break;
+      case 'badkey': text = '⚠️ Reconnect Drive'; warn = true; break;
+      case 'paused': text = '⚠️ Passcode off - not syncing'; warn = true; break;
+      case 'error': text = '⚠️ Sync problem' + (cfg.lastSyncAt ? ' · last ' + clockText(cfg.lastSyncAt) : ''); warn = true; break;
+      default: if (!isUnlocked()) text = '🔒 Unlock to sync';
+    }
+    b.hidden = false;
+    b.textContent = text;
+    b.classList.toggle('sync-warn', warn);
+  }
   function renderUI() {
+    renderBadge();
     const statusEl = $('driveStatus');
     if (!statusEl) return;
     statusEl.style.whiteSpace = 'pre-line';
@@ -617,6 +649,7 @@
       syncNow({ interactive: true, force: true });
     });
     $('btnDriveDisconnect').addEventListener('click', disconnect);
+    $('driveSyncBadge').addEventListener('click', () => $('btnSettings').click()); // tap the status -> Settings
     new MutationObserver(renderUI).observe($('settingsModal'), { attributes: true, attributeFilter: ['class'] });
     renderUI();
   }
