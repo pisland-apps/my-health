@@ -21,13 +21,14 @@
 // ever shows a version that doesn't match what you expect after deploying,
 // that's the signal to hard-refresh (Ctrl/Cmd+Shift+R) or clear the site's
 // Service Worker/cache in devtools - not a sign the deploy failed.
-const CACHE_VERSION = 'v72';
+const CACHE_VERSION = 'v73';
 const CACHE_NAME = `my-health-${CACHE_VERSION}`;
 
 const APP_SHELL = [
   './',
   './app.js',
   './merge-engine.js',
+  './drive-sync.js',
   './styles.css',
   './manifest.json',
   './icons/icon-192.png',
@@ -108,6 +109,9 @@ self.addEventListener('activate', (event) => {
 // so the app still opens even with zero connectivity.
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  // v73: Google Drive sync talks to googleapis.com / accounts.google.com. Those
+  // requests are never cached or answered here - the browser handles them directly.
+  if (new URL(event.request.url).origin !== self.location.origin) return;
 
   // Navigation requests (actual page loads - including the installed
   // shortcut's start_url, a bookmark, a manually typed /index.html, etc.)

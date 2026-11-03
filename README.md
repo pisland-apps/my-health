@@ -79,3 +79,15 @@ git push -u origin main
 python3 -m http.server 8000      # Service Worker 仅在 HTTPS 或 localhost 下生效
 node merge-engine.test.js        # 合并引擎测试
 ```
+
+## v73 - Google Drive sync (optional)
+
+Settings -> **Google Drive sync** keeps several devices in step through the person's own Google Drive.
+
+- Scope is `drive.appdata` only: the app can reach its own hidden folder, never other Drive files.
+- Needs the passcode to be on. Data and every photo/PDF are encrypted on the device (AES-256-GCM, key = PBKDF2(passcode, driveSalt)) before upload; Google only stores ciphertext. Use the same passcode on every device.
+- Sync is a merge (`FHSMerge.mergeMembers`), not an overwrite. Same item edited on two devices -> the existing Conflicts queue; deletions travel as tombstones.
+- Files: `my-health-sync.json` (data) and `my-health-att-<id>.json` (one per attachment, uploaded/downloaded only when missing on the other side). Attachment files nobody references for 30 days are deleted.
+- OAuth client: web client "My Health Web" in Google Cloud project `my-health` (consent screen published, only a non-sensitive scope, no verification needed). Authorized JavaScript origin must equal the site origin.
+- Code: `drive-sync.js` (loaded after `app.js`), hooks in `app.js` (`FHSDrive.*`), `drive-sync.test.js` (`node drive-sync.test.js`, two simulated devices + fake Drive).
+- CSP / headers: Google hosts added for the sign-in script and Drive API; `Cross-Origin-Opener-Policy` is `same-origin-allow-popups` because the Google sign-in pop-up needs it. `privacy.html` is the privacy policy linked from the Google consent screen.

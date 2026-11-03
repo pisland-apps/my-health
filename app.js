@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v72';
+    const APP_VERSION = 'v73';
     const APP_VERSION_DATE = '2026-11-02';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -657,6 +657,7 @@
       setCryptoConfig({ enabled: true, salt: saltB64, verifier, iterVer: PBKDF2_ITER_VERSION });
       setCryptoIntent('enabled');
       cryptoKey = key;
+      if (window.FHSDrive) FHSDrive.onPasscode(passcode); // Drive sync derives its own key from the passcode
     }
 
     async function cryptoUnlock(passcode) {
@@ -672,6 +673,7 @@
         const check = await decryptText(cfg.verifier, key);
         if (check !== 'verify-ok') return false;
         cryptoKey = key;
+        if (window.FHSDrive) FHSDrive.onPasscode(passcode); // typed or biometric: both end up here
         // Fire-and-forget: bring this vault's iteration count up to the
         // current standard now that we have the plaintext passcode in hand
         // (we never store it, so this is the only time we can do this).
@@ -682,7 +684,7 @@
       } catch { return false; }
     }
 
-    function cryptoLock() { cryptoKey = null; }
+    function cryptoLock() { cryptoKey = null; if (window.FHSDrive) FHSDrive.onLock(); }
 
     // Re-keys an already-unlocked vault from an older PBKDF2 iteration count
     // up to the current one, using the passcode the user just typed/supplied
@@ -1551,6 +1553,7 @@
       renderMemberList();
       renderMain();
       updateConflictBadge();
+      if (window.FHSDrive) FHSDrive.onAppReady(); // first Drive sync after unlock / start
     }
 
     // Encrypts the ENTIRE app data blob (all members) before
@@ -1560,6 +1563,7 @@
     // window where an edit could theoretically be lost if the tab is closed
     // within a few milliseconds of saving is an accepted, documented trade-off.
     function saveData() {
+      if (window.FHSDrive) FHSDrive.markDirty(); // schedules a Drive sync when connected
       const cfg = getCryptoConfig();
       const json = JSON.stringify(members);
       if (cfg && cfg.enabled && cryptoKey) {

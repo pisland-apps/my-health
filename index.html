@@ -132,13 +132,18 @@
           没有 fetch()/XMLHttpRequest 调用，理论上可以设成 'none'，但留 'self'
           是为了不影响 Service Worker 自身的资源请求，且几乎不增加实际风险。
      ============================================================ -->
+  <!-- v73: the Google hosts below exist only for the optional Google Drive sync
+       (drive-sync.js): Google's sign-in script and the Drive API (appDataFolder only).
+       The sign-in script is loaded on demand, never for people who do not connect Drive.
+       Without Drive sync, remove them again to get the old fully-closed policy back. -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'none';
-    script-src 'self';
-    style-src 'self';
+    script-src 'self' https://accounts.google.com/gsi/client;
+    style-src 'self' https://accounts.google.com/gsi/style;
     img-src 'self' data: blob:;
     font-src 'self';
-    connect-src 'self';
+    connect-src 'self' https://accounts.google.com/gsi/ https://www.googleapis.com https://oauth2.googleapis.com;
+    frame-src https://accounts.google.com/gsi/;
     worker-src 'self';
     manifest-src 'self';
     object-src 'none';
@@ -279,6 +284,14 @@
           </select>
           <div class="set-hint" id="autoLockHint"></div>
         </div>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">Google Drive sync</div>
+        <div class="set-hint" id="driveStatus"></div>
+        <button type="button" class="set-row" id="btnDriveConnect">☁️ Connect Google Drive</button>
+        <button type="button" class="set-row" id="btnDriveSyncNow">🔄 Sync now</button>
+        <button type="button" class="set-row" id="btnDriveDisconnect">⛔ Disconnect</button>
       </div>
 
       <div class="set-section">
@@ -855,6 +868,26 @@
     </div>
   </div>
 
+  <!-- Google Drive connect dialog (drive-sync.js) -->
+  <div class="modal-overlay" id="driveConnectModal">
+    <div class="modal">
+      <div class="modal-header">☁️ Connect Google Drive</div>
+      <div id="drivePasscodeGroup">
+        <p class="s-d163f8c4">Your data is encrypted with your passcode before it is uploaded, so Google only ever stores a scrambled copy. Use the same passcode on every device you connect.</p>
+        <div class="form-group">
+          <label class="form-label">Your passcode</label>
+          <input type="text" class="form-input s-passcode-mask" id="drivePasscodeInput" placeholder="Passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+      </div>
+      <p class="s-d163f8c4" id="driveSignInNote">Passcode accepted. Next, sign in with the Google account whose Drive should hold the data. The app can only reach its own hidden folder, not your other files.</p>
+      <div id="driveConnectError" class="s-0c35d232"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="btnDriveConnectCancel">Cancel</button>
+        <button class="btn btn-primary" id="btnDriveConnectGo">Continue</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Import Passcode Modal (shown when the imported file is an encrypted backup) -->
   <div class="modal-overlay" id="importPasscodeModal">
     <div class="modal s-ffad898c">
@@ -875,5 +908,6 @@
 
   <script src="merge-engine.js"></script>
   <script src="app.js"></script>
+  <script src="drive-sync.js"></script>
 </body>
 </html>
