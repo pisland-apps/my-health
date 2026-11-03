@@ -147,13 +147,25 @@ function mergeSyncArray(localArr, remoteArr, opts) {
 
 // ---------- attachment array merge (id + tombstone only, no version -
 // design 1.9/2.2) ----------
+// v76: the same photo can reach two devices under two different ids (a backup
+// import mints fresh attachment ids on the device it is restored to, while the
+// records keep theirs). Matching by id alone then lists every photo twice after
+// the first Drive sync. Two LIVE attachments in one record with the same type,
+// name and size are therefore treated as one file; the smallest id is kept, so
+// every device settles on the same survivor (the merge stays deterministic and
+// idempotent). Tombstoned entries are never folded.
+function attachmentFingerprint(a) {
+  if (!a || a.deletedAt || !a.name || a.size == null) return null;
+  return [a.type || '', a.name, a.size].join('|');
+}
+
 function mergeAttachmentArray(localArr, remoteArr) {
   const localById = new Map((localArr || []).map(x => [x.id, x]));
   const remoteById = new Map((remoteArr || []).map(x => [x.id, x]));
   const allIds = Array.from(new Set([].concat(
     Array.from(localById.keys()), Array.from(remoteById.keys())
   )));
-  return allIds.map(id => {
+  const byId = allIds.map(id => {
     const l = localById.get(id);
     const r = remoteById.get(id);
     if (l && r) {
@@ -164,6 +176,18 @@ function mergeAttachmentArray(localArr, remoteArr) {
       return Object.assign({}, l, { deletedAt: l.deletedAt || r.deletedAt || null });
     }
     return Object.assign({}, l || r);
+  });
+  // fold same-file duplicates (live only), keeping the smallest id of each group
+  const keep = new Map(); // fingerprint -> entry kept
+  byId.forEach((a) => {
+    const fp = attachmentFingerprint(a);
+    if (fp === null || a.id == null) return;
+    const cur = keep.get(fp);
+    if (!cur || String(a.id) < String(cur.id)) keep.set(fp, a);
+  });
+  return byId.filter((a) => {
+    const fp = attachmentFingerprint(a);
+    return fp === null || keep.get(fp) === a;
   });
 }
 
@@ -546,7 +570,7 @@ return {
   mergeMembers,
   mergeMemberPair,
   mergeSyncArray,
-  mergeAttachmentArray,
+  mergeAttachmentArray, attachmentFingerprint,
   mergeMemberFields,
   mergeEntityMeta,
   projectForCompare,

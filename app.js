@@ -7,7 +7,7 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v75';
+    const APP_VERSION = 'v76';
     const APP_VERSION_DATE = '2026-11-03';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
@@ -1602,6 +1602,51 @@
     // never touches your original photos, only the small localStorage preview.
     // This is the fix for "storage full" errors caused by thumbnails that were
     // saved back when thumbnails were larger.
+    // v76: finds photos/PDFs that appear twice in one record (same type + name + size under two
+    // ids - what a backup restore followed by the first Drive sync used to leave behind) and
+    // removes the extra copies. The copy whose bytes are on this device is kept.
+    async function removeDuplicatePhotos() {
+      const plan = []; // { record, drop: [attachment objects] }
+      for (const m of members) {
+        if (m.deletedAt) continue;
+        for (const r of (m.records || [])) {
+          if (r.deletedAt) continue;
+          const groups = new Map();
+          for (const att of (r.attachments || [])) {
+            if (att.deletedAt) continue;
+            const fp = FHSMerge.attachmentFingerprint(att);
+            if (fp === null) continue;
+            if (!groups.has(fp)) groups.set(fp, []);
+            groups.get(fp).push(att);
+          }
+          const drop = [];
+          for (const list of groups.values()) {
+            if (list.length < 2) continue;
+            const have = [];
+            for (const a of list) { try { if (await idbGetRaw(a.id) != null) have.push(a); } catch {} }
+            const pool = have.length ? have : list;
+            const keep = pool.slice().sort((a, b) => String(a.id) < String(b.id) ? -1 : 1)[0];
+            list.forEach(a => { if (a !== keep) drop.push(a); });
+          }
+          if (drop.length) plan.push({ record: r, drop });
+        }
+      }
+      const total = plan.reduce((n, p) => n + p.drop.length, 0);
+      if (!total) { alert('No duplicate photos found.'); return; }
+      if (!confirm(`Found ${total} duplicate photo/file${total === 1 ? '' : 's'} (same name and size in the same record).\n\nOne copy of each is kept and the extra ${total === 1 ? 'copy is' : 'copies are'} removed. Continue?`)) return;
+      const stamp = nowIso();
+      const dropIds = [];
+      plan.forEach(({ record, drop }) => {
+        drop.forEach(a => { a.deletedAt = stamp; dropIds.push(a.id); });
+        bumpVersion(record);
+      });
+      if (!saveData()) { alert('Could not save - storage may be full. Nothing was changed.'); return; }
+      await purgeUnreferencedAttachmentBytes(dropIds);
+      renderMemberList();
+      renderMain();
+      alert(`Removed ${total} duplicate photo/file${total === 1 ? '' : 's'}.`);
+    }
+
     async function compactThumbnails() {
       if (!confirm('Shrink saved photo previews to free up storage space?\n\nThis regenerates smaller thumbnails from your existing full-quality photos (which stay untouched in IndexedDB) - nothing is deleted.')) return;
 
@@ -1782,6 +1827,7 @@
       document.getElementById('sidebarBackdrop').addEventListener('click', () => toggleSidebar(false));
       document.getElementById('btnReset').addEventListener('click', resetData);
       document.getElementById('btnCompact').addEventListener('click', compactThumbnails);
+      document.getElementById('btnDedupePhotos').addEventListener('click', removeDuplicatePhotos);
 
       // Modal buttons
       document.getElementById('btnCancelMember').addEventListener('click', () => closeModal('member'));

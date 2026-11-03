@@ -247,6 +247,29 @@ function deepJSON(x) { return JSON.stringify(x); }
 })();
 
 // ============================================================
+// 10b. v76: same photo under two ids (backup import re-ids photos) folds to one
+// ============================================================
+(function testAttachmentDuplicateFold() {
+  const att = (id, extra) => Object.assign({ id, name: 'MVIMG_1.jpg', type: 'image', size: 256000, deletedAt: null }, extra || {});
+  const pcSide = [att('att_z'), att('att_y', { name: 'MVIMG_2.jpg', size: 251000 })];
+  const phoneSide = [att('att_a'), att('att_b', { name: 'MVIMG_2.jpg', size: 251000 })];
+  const m1 = mergeAttachmentArray(pcSide, phoneSide);
+  const m2 = mergeAttachmentArray(phoneSide, pcSide);
+  ok('fold: 2 photos x 2 ids -> 2 entries', m1.length === 2, JSON.stringify(m1.map(a => a.id)));
+  ok('fold: smallest id survives', m1.map(a => a.id).sort().join() === 'att_a,att_b');
+  ok('fold: symmetric (same survivors either way round)', m1.map(a => a.id).sort().join() === m2.map(a => a.id).sort().join());
+  ok('fold: idempotent', mergeAttachmentArray(m1, pcSide).map(a => a.id).sort().join() === 'att_a,att_b');
+  ok('fold: different size is NOT folded', mergeAttachmentArray([att('p1')], [att('p2', { size: 1 })]).length === 2);
+  ok('fold: different name is NOT folded', mergeAttachmentArray([att('p1')], [att('p2', { name: 'other.jpg' })]).length === 2);
+  const withTomb = mergeAttachmentArray([att('p1', { deletedAt: '2026-01-01T00:00:00.000Z' })], [att('p2')]);
+  ok('fold: a tombstoned copy is left alone and the live one stays live', withTomb.length === 2 && withTomb.filter(a => !a.deletedAt).length === 1);
+  const delOne = mergeAttachmentArray([att('a'), att('b')], [att('a', { deletedAt: '2026-01-01T00:00:00.000Z' })]);
+  ok('fold: deleting one duplicate leaves exactly one live photo', delOne.filter(a => !a.deletedAt).length === 1);
+  const noSize = mergeAttachmentArray([{ id: 'n1', name: 'x.pdf', deletedAt: null }], [{ id: 'n2', name: 'x.pdf', deletedAt: null }]);
+  ok('fold: entries without a size are never folded', noSize.length === 2);
+})();
+
+// ============================================================
 // Extra: randomized fuzz pass for idempotence + commutativity across
 // small random member trees (bonus coverage beyond the 10 named tests)
 // ============================================================

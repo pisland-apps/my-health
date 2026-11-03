@@ -305,6 +305,11 @@
       }
     });
 
+    // v76: remember this device's attachments as they were BEFORE the merge, so a photo that
+    // the merge folds into a same-file twin can reuse its bytes instead of downloading again.
+    const preAtts = FHSMerge.collectAttachmentObjects(members);
+    const preLiveIds = FHSMerge.collectLiveAttachmentIds(members);
+
     // 1. pull + merge when Drive changed since we last looked
     let remoteMembers = null;
     let newConflicts = 0;
@@ -352,6 +357,14 @@
     for (const id of toDown) {
       setStatus('syncing', 'Downloading attachments (' + (++done) + '/' + (toDown.length + toUp.length) + ')...');
       try {
+        // v76: same file already stored here under another id (e.g. restored from a backup)? copy it.
+        const wanted = FHSMerge.collectAttachmentObjects(members).find(a => a && a.id === id);
+        const fp = wanted ? FHSMerge.attachmentFingerprint(wanted) : null;
+        const twin = fp && preAtts.find(a => a && a.id !== id && localKeys.has(a.id) && FHSMerge.attachmentFingerprint(a) === fp);
+        if (twin) {
+          const have = await idbGet(twin.id);
+          if (typeof have === 'string') { await idbPut(id, have); localKeys.add(id); continue; }
+        }
         const env = JSON.parse(await downloadText(attFiles.get(id).id));
         const dataUrl = await decryptText(env.payload, syncKey);
         await idbPut(id, dataUrl); // same id as on the other device, re-encrypted with THIS device's key
@@ -368,6 +381,11 @@
       } catch (e) { if (e.auth) throw e; attFailed++; console.warn('Attachment upload failed', id, e); }
     }
     if (toDown.length && typeof renderMain === 'function') renderMain();
+    // v76: bytes of photos the merge folded away are not used any more (only when nothing failed,
+    // so a retry can still find them)
+    if (!attFailed && preLiveIds.length) {
+      try { await purgeUnreferencedAttachmentBytes(preLiveIds); } catch (e) { console.warn('Tidy of folded photos failed', e); }
+    }
 
     // 3. push the member data when this device has something Drive does not
     let needUpload;

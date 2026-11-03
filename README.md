@@ -106,3 +106,13 @@ Each medicine has a **Share with the whole family** switch (Cabinet -> + Add med
 ## v75 - Sync status under the title
 
 When Google Drive is connected, a small line under "My Health" shows the state: `☁️ Synced 11:39 AM`, `☁️ Syncing...`, `🔒 Unlock to sync`, or a red `⚠️ ...` (sign in again / reconnect / sync problem / passcode off). Tap it to open Settings -> Google Drive sync. Hidden when Drive is not connected.
+
+## v76 - No more duplicate photos after the first Drive sync
+
+**Cause:** a backup restore gives every photo a brand-new id on that device, while records keep theirs. Sync matched photos by id only, so the first Drive connect listed each photo twice and downloaded it again.
+
+- Merge: two live attachments in the same record with the same type + name + size are treated as one file. The smallest id survives, so every device settles on the same one (symmetric, idempotent). Tombstoned entries are never folded; a photo without a size is never folded.
+- Sync: when the surviving id is not stored on this device but a same-file twin is, the bytes are copied locally instead of downloaded; bytes of the folded-away ids are then removed (only if nothing failed).
+- Settings -> Storage -> **Remove duplicate photos**: cleans duplicates already present (asks first, keeps the copy whose bytes are on this device, deletes the rest like a normal photo delete so it syncs).
+- Known limit: two genuinely different files with identical type, name and size inside one record would be treated as one.
+- Tests: `node merge-engine.test.js` (new fold cases).
