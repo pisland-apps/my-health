@@ -8,7 +8,7 @@
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
     const APP_VERSION = 'v75';
-    const APP_VERSION_DATE = '2026-11-02';
+    const APP_VERSION_DATE = '2026-11-03';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
     // done at top level, not inside init()/initAppData(), so it renders before any
