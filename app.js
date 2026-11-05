@@ -7,8 +7,8 @@
     // Service Worker and has no effect on caching. It does NOT auto-sync with
     // CACHE_VERSION in service-worker.js since they live in different files — bump both
     // together on every deploy. (Reminder comment also left in service-worker.js.)
-    const APP_VERSION = 'v76';
-    const APP_VERSION_DATE = '2026-11-03';
+    const APP_VERSION = 'v77';
+    const APP_VERSION_DATE = '2026-11-05';
     // Populate the badge immediately — app.js is loaded at the end of <body>, so the DOM
     // (including #versionBadge) already exists by the time this line runs. Deliberately
     // done at top level, not inside init()/initAppData(), so it renders before any
@@ -3259,6 +3259,7 @@
         let taken = 0, skipped = 0, missed = 0, entries = [];
         if (planItemIsAsNeeded(it)) {
           entries = intervalEntries(m, it.id).filter(e => e.date === date && e.status === 'taken');
+          taken = entries.length;                                   // v77: each logged as-needed dose counts as taken (calendar tick)
         } else if (planItemIsInterval(it)) {
           entries = intervalEntries(m, it.id).filter(e => e.date === date).sort((a, b) => (entryAnchorMs(a) || 0) - (entryAnchorMs(b) || 0));
           entries.forEach(e => { if (e.status === 'taken') taken++; else if (e.status === 'skipped') skipped++; else missed++; });

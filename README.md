@@ -107,6 +107,9 @@ Each medicine has a **Share with the whole family** switch (Cabinet -> + Add med
 
 When Google Drive is connected, a small line under "My Health" shows the state: `☁️ Synced 11:39 AM`, `☁️ Syncing...`, `🔒 Unlock to sync`, or a red `⚠️ ...` (sign in again / reconnect / sync problem / passcode off). Tap it to open Settings -> Google Drive sync. Hidden when Drive is not connected.
 
+## v77 - As-needed doses now show a tick in the calendar
+As-needed doses were listed in the day sheet but never counted, so the calendar cell stayed empty. Each logged as-needed dose now counts as taken.
+
 ## v76 - No more duplicate photos after the first Drive sync
 
 **Cause:** a backup restore gives every photo a brand-new id on that device, while records keep theirs. Sync matched photos by id only, so the first Drive connect listed each photo twice and downloaded it again.
